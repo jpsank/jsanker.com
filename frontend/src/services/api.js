@@ -1,15 +1,7 @@
 import axios from "axios";
 
-const host = process.env.hasOwnProperty('DEPLOY_URL') ? process.env.DEPLOY_URL : '';
-const serverQuery = async (path) => {
-  // a simple wrapper for making fetch GET requests
-  // no need to supply the whole URL, only the relative path
-  return axios.post(`${host}/.netlify/functions/serverQuery`, { path: path });
-};
-
-const backendURL = process.env.NODE_ENV === "development" ? "http://127.0.0.1:5000" : "https://api.jsanker.com";
 const queryBackend = async (relativePath) => {
-  return serverQuery(`${backendURL}/${relativePath}`);
+  return axios.get(`/api/${relativePath}`, { responseType: "text", transformResponse: (data) => data });
 };
 
 

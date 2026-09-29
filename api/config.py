@@ -1,4 +1,5 @@
 import os
 
 ROOTDIR = os.path.dirname(os.path.realpath(__file__))
-DATADIR = os.path.join(ROOTDIR, 'data')
+# shared with the Netlify function (frontend/functions/api)
+DATADIR = os.path.join(ROOTDIR, '..', 'frontend', 'functions', 'api', 'data')
