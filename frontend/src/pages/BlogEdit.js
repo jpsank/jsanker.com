@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
-import { doc, onSnapshot, updateDoc } from "firebase/firestore";
+import { doc, onSnapshot, serverTimestamp, updateDoc } from "firebase/firestore";
 import { db } from "../services/firebase";
 import '@mdxeditor/editor/style.css';
 import {
@@ -55,9 +55,8 @@ const BlogEdit = () => {
     }, [blog, currentUser, params.id]);
 
     const handleUpdate = async (content) => {
-        let date = new Date();
         await updateDoc(doc(db, "blogs", params.id), {
-            dateUpdated: date,
+            dateUpdated: serverTimestamp(),
             content: content,
         });
     };

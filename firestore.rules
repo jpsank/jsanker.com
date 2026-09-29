@@ -7,6 +7,8 @@ service cloud.firestore {
       allow create: if request.auth != null
         && request.resource.data.keys().hasOnly(['authorId', 'authorName', 'content', 'dateCreated', 'dateUpdated'])
         && request.resource.data.authorId == request.auth.uid
+        && request.resource.data.dateCreated == request.time
+        && request.resource.data.dateUpdated == request.time
         && (request.resource.data.authorName == null
             || (request.resource.data.authorName is string && request.resource.data.authorName.size() <= 100))
         && request.resource.data.content is string
@@ -15,6 +17,7 @@ service cloud.firestore {
       allow update: if request.auth != null
         && resource.data.authorId == request.auth.uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['content', 'dateUpdated'])
+        && request.resource.data.dateUpdated == request.time
         && request.resource.data.content is string
         && request.resource.data.content.size() <= 50000;
 

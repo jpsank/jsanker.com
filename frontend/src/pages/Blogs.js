@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { collection, addDoc, onSnapshot, orderBy, query, where } from "firebase/firestore";
+import { collection, addDoc, onSnapshot, orderBy, query, serverTimestamp, where } from "firebase/firestore";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { db } from "../services/firebase";
 import { Button, Card, Container } from 'react-bootstrap';
@@ -33,7 +33,7 @@ const Blogs = () => {
             }
             const blogData = snapshot.docs.map((doc) => ({
                 id: doc.id,
-                ...doc.data(),
+                ...doc.data({ serverTimestamps: "estimate" }),
             }));
             setBlogs(blogData);
         });
@@ -42,10 +42,9 @@ const Blogs = () => {
 
     const createNewBlog = async (e) => {
         e.preventDefault();
-        let date = new Date();
         let blog = await addDoc(collection(db, "blogs"), {
-            dateCreated: date,
-            dateUpdated: date,
+            dateCreated: serverTimestamp(),
+            dateUpdated: serverTimestamp(),
             content: DEFAULT_CONTENT,
             authorId: currentUser.uid,
             authorName: currentUser.displayName,
