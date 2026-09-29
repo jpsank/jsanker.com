@@ -28,7 +28,7 @@ const Home = () => {
                                 </Col>
                                 <Col className="text-md-start text-center p-0 m-0">
                                     <h2>Julian Sanker</h2>
-                                    <h5>CS @ Yale. Interested in artificial intelligence, computational biology, and software engineering.</h5>
+                                    <h5>CS graduate of Yale. Interested in artificial intelligence, computational biology, and software engineering.</h5>
                                     <Link to="https://www.linkedin.com/in/juliansanker" target="_blank" rel="noreferrer" 
                                         className="fa fa-linkedin fa-1x p-1 text-decoration-none text-black"></Link>
                                     <Link to="https://github.com/jpsank" target="_blank" rel="noreferrer"
@@ -60,7 +60,7 @@ const Home = () => {
                 </Col>
                 <Col className="px-4">
                     <h1>About</h1>
-                    <p>I'm a junior studying Computer Science at Yale University, from Northwest Arkansas.</p>
+                    <p>I'm a Yale University graduate with a degree in Computer Science, from Northwest Arkansas.</p>
                     <p>I enjoy creating software, particularly websites and useful apps. I'm looking for jobs in software engineering, artificial intelligence, and computational biology.</p>
                     <p>I also enjoy nature, and I'm interested in creating models of living organisms using <a href="https://nn.cs.utexas.edu/downloads/papers/stanley.ec02.pdf" target="_blank" rel="noreferrer">neural networks and evolutionary algorithms</a>.</p>
                     <p>Reach out to me at <a href="mailto:julian@sankergroup.org">julian@sankergroup.org</a> or <a href="https://calendly.com/juliansanker">schedule a meeting</a>.</p>
