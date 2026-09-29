@@ -10,7 +10,7 @@ const Layout = () => {
             <Navbar bg="light" expand="lg" className="my-4 px-sm-5 px-3" style={{width: "100%", maxWidth: "1000px"}}>
                 <LinkContainer to="/">
                     <Navbar.Brand className="fs-4 me-5">
-                        jsanker.org
+                        jsanker.com
                     </Navbar.Brand>
                 </LinkContainer>
                 <Navbar.Toggle aria-controls="basic-navbar-nav" />
