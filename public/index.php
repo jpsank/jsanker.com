@@ -22,8 +22,6 @@ or <a href="https://calendly.com/juliansanker">schedule a meeting</a>.</p>
 <h2>Things of note</h2>
 <ul>
   <li><a href="/projects/">Projects</a> — old high-school programs, most still running</li>
-  <li><a href="/projects/chemcalc/">ChemCalc</a> — thermodynamics and equation balancing for AP Chem</li>
-  <li><a href="/projects/wireworld/">WireWorld</a> — a Turing-complete cellular automaton</li>
   <li><a href="/blog/">Blog</a> — write one yourself if you make an account</li>
   <li><a href="/life/">Life</a> — Conway's Game of Life, seeded at random from 1,257 patterns</li>
   <li><a href="/photos/">Photos</a> — Northwest Arkansas</li>
