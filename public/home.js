@@ -15,7 +15,7 @@
   var x = css / 2, y = css / 2, size = css / 2;
   var rot = 0, accel = 0, active = false;
   var GAIN = 1.15;       // a slight boost over the original (1.0): trackpad drags are slow and small
-  var CARRY = 0.2;       // share of the current spin kept when a new move arrives, so small moves add up a little
+  var CARRY = 0.1;       // share of the current spin kept when a new move arrives, so small moves add up a little
   var MAX_SPIN = 1;      // radians per frame, so it can't strobe
   var FRICTION = 0.99;   // spin lost per frame, as in the original
   var COLORS = ['cyan', 'lime', 'yellow'];
