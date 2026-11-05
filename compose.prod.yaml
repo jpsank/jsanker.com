@@ -1,0 +1,34 @@
+# Production (a single small VM, e.g. Oracle Cloud Always Free). See docs/DEPLOY-ORACLE.md.
+#
+#   docker compose -f compose.prod.yaml up -d --build
+#
+# Unlike compose.yaml, the code is baked into the image (nothing is bind-mounted), the container
+# restarts on boot, and it listens on 80/443 itself (Caddy gets and renews the HTTPS certificate).
+#
+# Configuration comes from .env next to this file (copy .env.example): SERVER_NAME and FIREBASE_*.
+# SERVER_NAME defaults to plain HTTP on :80 so a fresh deploy can be tested by IP before DNS points here.
+services:
+  web:
+    build: .
+    image: jsanker-web
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      SERVER_NAME: ${SERVER_NAME:-:80}
+    env_file:
+      - .env
+    volumes:
+      - appdata:/var/lib/jsanker   # SQLite databases, sessions, uploads  <- BACK THIS UP (scripts/backup.sh)
+      - caddy_data:/data           # HTTPS certificates
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  appdata:
+  caddy_data:

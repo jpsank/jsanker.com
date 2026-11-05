@@ -14,12 +14,15 @@ public/            document root (the only thing the web server can see)
   assets/site.css  the new minimalist design (system light/dark) for home, blog, photos
   assets/legacy/   the original puffyboa.xyz shared.css + favicon, used by the ported projects
 src/               shared PHP (bootstrap, layout, Censor, LegacyClean) and per-project server code — NOT web-accessible
-bin/               bin/migrate-legacy.php (one-off import of the 2019 databases)
+bin/               bin/migrate-legacy.php (one-off import of the 2019 databases), bin/backup.php (online backup)
 tests/             word-filter tests
 data/              read-only app data (Game of Life patterns, ChemCalc tables, Speedreed texts) — NOT web-accessible
 docker/            Caddyfile + php.ini
 firestore.rules    Firestore security rules for the blog (deploy with the Firebase CLI)
 scripts/smoke.sh   builds the image, boots it, checks routes and security headers
+scripts/backup.sh, scripts/restore.sh   production backup / restore of the data volume
+compose.prod.yaml  production compose file (80/443, restart on boot, named volumes)
+docs/DEPLOY-ORACLE.md   step-by-step deploy on Oracle Cloud Always Free
 ```
 
 ## Run locally
@@ -33,7 +36,9 @@ scripts/test.sh           # PHP lint + word-filter tests
 
 ## Deploy
 
-Any host that runs a Docker image works (Fly.io, Railway, a VPS…).
+Step-by-step for a free Oracle Cloud VM, including DNS, importing the old data and nightly backups:
+**[docs/DEPLOY-ORACLE.md](docs/DEPLOY-ORACLE.md)**. Any host that runs a Docker image with a persistent disk works
+(a VPS, Fly.io, Railway…); use `compose.prod.yaml`. Netlify can't host this app (no PHP, no persistent disk).
 
 - Set `SERVER_NAME=jsanker.com` for automatic HTTPS (leave unset for plain HTTP on :80).
 - Mount a **persistent volume at `/var/lib/jsanker`** — SQLite databases (OpenChat, APedia), sessions,
@@ -42,6 +47,7 @@ Any host that runs a Docker image works (Fly.io, Railway, a VPS…).
 - Optional: `OPENCHAT_ALLOW_IMAGES=1` to allow image uploads on OpenChat (off by default — it is an
   anonymous public board with no moderation).
 - Run a **single instance**: SQLite is on a local volume.
+- **Back up `/var/lib/jsanker`**: `scripts/backup.sh` (nightly cron) and copy the result off the server.
 - Rate limiting keys on the client IP as PHP sees it. Behind a proxy, make sure Caddy's
   `trusted_proxies` (see `docker/Caddyfile`) covers it, or everyone shares one bucket.
 
