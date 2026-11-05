@@ -3,12 +3,13 @@ declare(strict_types=1);
 require_once __DIR__ . '/../src/layout.php';
 
 page_start([
+    'home'        => true,
     'description' => 'Julian Sanker — Yale CS graduate from Northwest Arkansas. Software, AI, computational biology.',
     'styles'      => ['/life/life.css'],
     'scripts'     => ['/home.js', '/life/life.js'],
 ]);
 ?>
-<img class="portrait" src="/img/me.jpeg" alt="Julian Sanker" width="144" height="144">
+<img class="portrait" src="/img/me.jpeg" alt="Portrait photo" width="144" height="144">
 
 <div class="hero">
   <canvas id="fidget" class="fidget" role="img" aria-label="A fidget spinner. Drag across it to spin."></canvas>

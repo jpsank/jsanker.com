@@ -69,6 +69,7 @@ header.site {
   padding: 20px 0 8px;
   border-bottom: 1px solid var(--rule);
 }
+header.site.home { justify-content: flex-start; }
 header.site .name { font-size: 1.25rem; font-weight: bold; text-decoration: none; color: var(--fg); }
 header.site nav { display: flex; gap: 1.25rem; }
 

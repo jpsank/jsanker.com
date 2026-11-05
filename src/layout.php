@@ -23,6 +23,7 @@ function asset(string $path): string
  *   crumbs       [[label, url], ...] shown under the header, e.g. projects / ChemCalc
  *   styles       extra stylesheet paths
  *   scripts      extra scripts: 'path.js' or ['src' => 'path.js', 'module' => true]
+ *   home         true = the home page: the header shows only the nav (the page's own h1 carries the name)
  *   bare         true = no header/footer (full-screen toys like WireWorld)
  *   legacy       true = original puffyboa.xyz look: loads /assets/legacy/shared.css and prints the
  *                original breadcrumb bar from `crumbs` (jsanker.com / Projects / Project / Page); no new site chrome.
@@ -75,7 +76,11 @@ function page_start(array $o = []): void
         return;
     }
 
-    echo '<header class="site"><a class="name" href="/">Julian Sanker</a>';
+    $home = !empty($o['home']);
+    echo '<header class="site' . ($home ? ' home' : '') . '">';
+    if (!$home) {
+        echo '<a class="name" href="/">Julian Sanker</a>';
+    }
     echo '<nav aria-label="Main">';
     foreach ([['/projects/', 'projects'], ['/blog/', 'blog'], ['/photos/', 'photos']] as [$href, $label]) {
         echo '<a href="' . e($href) . '">' . e($label) . '</a>';
