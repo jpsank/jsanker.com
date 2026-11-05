@@ -14,6 +14,10 @@
 
   var x = css / 2, y = css / 2, size = css / 2;
   var rot = 0, accel = 0, active = false;
+  var GAIN = 1.3;        // a slight boost over the original (1.0): trackpad drags are slow and small
+  var CARRY = 0.3;       // share of the current spin kept when a new move arrives, so small moves add up a little
+  var MAX_SPIN = 1;      // radians per frame, so it can't strobe
+  var FRICTION = 0.99;   // spin lost per frame, as in the original
   var COLORS = ['cyan', 'lime', 'yellow'];
 
   function stroke() {
@@ -53,6 +57,21 @@
 
   var down = false, last = null;
 
+  // Angle (radians) swept around the hub when a point moves from a to b.
+  function angleBetween(a, b) {
+    var d = Math.atan2(-(b[1] - y), b[0] - x) - Math.atan2(-(a[1] - y), a[0] - x);
+    if (d > Math.PI) d -= 2 * Math.PI;                  // don't jump when crossing the +/-pi seam
+    if (d < -Math.PI) d += 2 * Math.PI;
+    return d;
+  }
+
+  // Add a push. Keeping a little of the current spin makes many small movements build up
+  // (a slow trackpad drag) instead of each one overwriting the last.
+  function push(d) {
+    accel = Math.max(-MAX_SPIN, Math.min(MAX_SPIN, accel * CARRY + d * GAIN));
+    active = true;
+  }
+
   canvas.addEventListener('pointerdown', function (e) {
     down = true;
     last = pos(e);
@@ -61,16 +80,11 @@
   canvas.addEventListener('pointermove', function (e) {
     if (!down) return;
     var p = pos(e);
-    var a1 = Math.atan2(-(last[1] - y), last[0] - x);   // angle of previous point around the hub
-    var a2 = Math.atan2(-(p[1] - y), p[0] - x);         // angle of current point
-    var d = a2 - a1;
-    if (d > Math.PI) d -= 2 * Math.PI;                  // don't jump when crossing the +/-pi seam
-    if (d < -Math.PI) d += 2 * Math.PI;
-    accel = Math.max(-1, Math.min(1, d));
-    active = true;
+    push(angleBetween(last, p));
     last = p;
   });
   function release() { down = false; }
+
   canvas.addEventListener('pointerup', release);
   canvas.addEventListener('pointercancel', release);
 
@@ -78,7 +92,7 @@
     requestAnimationFrame(frame);
     if (!active) return;
     rot += accel;
-    accel *= 0.99;
+    accel *= FRICTION;
     if (Math.abs(accel) < 0.0001) { accel = 0; active = false; }
     draw();
   }
