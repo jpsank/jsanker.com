@@ -66,7 +66,7 @@ function page_start(array $o = []): void
 
     echo '<header class="site"><a class="name" href="/">Julian Sanker</a>';
     echo '<nav aria-label="Main">';
-    foreach ([['/projects/', 'projects'], ['/blog/', 'blog'], ['/photos/', 'photos'], ['/life/', 'life']] as [$href, $label]) {
+    foreach ([['/projects/', 'projects'], ['/blog/', 'blog'], ['/photos/', 'photos']] as [$href, $label]) {
         echo '<a href="' . e($href) . '">' . e($label) . '</a>';
     }
     echo "</nav></header>\n";

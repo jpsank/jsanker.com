@@ -9,9 +9,9 @@ public/            document root (the only thing the web server can see)
   index.php        home
   projects/        ChemCalc, OpenChat, APedia, Speedreed, WireWorld, Audiovisual + cut-down "souvenirs" (HHA Grades, uMusic, CoronaRiskMap, Lucas Gifs)
   blog/            Firebase-backed blog (vanilla ES modules, no React)
-  life/            Conway's Game of Life; api/pattern.php serves random RLE patterns
+  life/            life.js + life.css for the Game of Life on the home page (/life/ redirects home); api/pattern.php serves random RLE patterns
   photos/          photo page
-  assets/site.css  the new minimalist design (system light/dark) for home, blog, photos, life
+  assets/site.css  the new minimalist design (system light/dark) for home, blog, photos
   assets/legacy/   the original puffyboa.xyz shared.css + favicon, used by the ported projects
 src/               shared PHP (bootstrap, layout, Censor, LegacyClean) and per-project server code — NOT web-accessible
 bin/               bin/migrate-legacy.php (one-off import of the 2019 databases)

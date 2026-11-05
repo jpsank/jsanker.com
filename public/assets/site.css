@@ -92,6 +92,11 @@ footer.site {
 ul.plain { list-style: none; padding: 0; }
 ul.plain li { margin: .5em 0; }
 
+.hero { display: flex; align-items: center; gap: 1rem; margin: 1rem 0 .5rem; }
+.hero h1 { margin: 0; }
+.fidget { width: 100px; height: 100px; flex: none; color: var(--fg); cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.fidget:active { cursor: grabbing; }
+
 .portrait {
   float: right;
   width: 9rem;

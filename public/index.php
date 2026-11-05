@@ -2,11 +2,18 @@
 declare(strict_types=1);
 require_once __DIR__ . '/../src/layout.php';
 
-page_start(['description' => 'Julian Sanker — Yale CS graduate from Northwest Arkansas. Software, AI, computational biology.']);
+page_start([
+    'description' => 'Julian Sanker — Yale CS graduate from Northwest Arkansas. Software, AI, computational biology.',
+    'styles'      => ['/life/life.css'],
+    'scripts'     => ['/home.js', '/life/life.js'],
+]);
 ?>
 <img class="portrait" src="/img/me.jpeg" alt="Julian Sanker" width="144" height="144">
 
-<h1>Julian Sanker</h1>
+<div class="hero">
+  <canvas id="fidget" class="fidget" role="img" aria-label="A fidget spinner. Drag across it to spin."></canvas>
+  <h1>Julian Sanker</h1>
+</div>
 
 <p>I'm a Yale University graduate with a degree in Computer Science, from Northwest Arkansas.</p>
 
@@ -19,14 +26,28 @@ engineering, artificial intelligence, and computational biology.</p>
 <p>Reach out at <a href="mailto:julian@sankergroup.org">julian@sankergroup.org</a>
 or <a href="https://calendly.com/juliansanker">schedule a meeting</a>.</p>
 
-<h2>Things of note</h2>
-<ul>
-  <li><a href="/projects/">Projects</a> — old high-school programs, most still running</li>
-  <li><a href="/blog/">Blog</a> — write one yourself if you make an account</li>
-  <li><a href="/life/">Life</a> — Conway's Game of Life, seeded at random from 1,257 patterns</li>
-  <li><a href="/photos/">Photos</a> — Northwest Arkansas</li>
-  <li><a href="https://crimemap.app/">Crime Map</a> — 911 dispatches in Fayetteville, built with Lucas Kellar for the 2019 JB Hunt Hackathon</li>
-</ul>
+<div class="life">
+  <canvas id="life-canvas" width="160" height="100" role="img"
+          aria-label="Conway's Game of Life. Click or drag to toggle cells."></canvas>
+  <p id="life-status" class="life-status muted small">Loading a pattern…</p>
+  <p class="life-controls small">
+    <button type="button" id="life-play">pause</button>
+    <button type="button" id="life-step">step</button>
+    <button type="button" id="life-random">new random pattern</button>
+    <button type="button" id="life-clear">clear</button>
+    <button type="button" id="life-zoom-in">zoom in</button>
+    <button type="button" id="life-zoom-out">zoom out</button>
+    <button type="button" id="life-fit">fit all</button>
+    <button type="button" id="life-mode">drag: draw</button>
+    <span class="life-speed">
+      <label for="life-speed">speed</label>
+      <input type="range" id="life-speed" min="1" max="60" value="15">
+    </span>
+  </p>
+</div>
+<p class="muted small"><a href="https://en.wikipedia.org/wiki/Conway%27s_Game_of_Life">Conway's Game of Life</a>,
+seeded at random from about 1,260 patterns. Drag to draw cells; zoom out or press “fit all” to see the whole grid
+(Ctrl/⌘ + scroll or pinch also zooms; Shift-drag or “drag: move” pans).</p>
 
 <h2>Colophon</h2>
 <p class="muted small">Plain HTML and PHP, one stylesheet, no tracking. The old projects are the original PHP,

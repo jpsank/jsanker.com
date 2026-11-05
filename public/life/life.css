@@ -1,4 +1,4 @@
-/* /life/ — canvas, status line and text-link controls. Colours come from site.css variables. */
+/* home page — canvas, status line and text-link controls. Colours come from site.css variables. */
 
 #life-canvas {
   display: block;
@@ -43,3 +43,5 @@
   background: none;
   accent-color: var(--link);
 }
+
+#life-canvas.moving { cursor: grab; }

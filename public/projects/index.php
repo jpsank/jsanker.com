@@ -20,7 +20,6 @@ For anything more recent, <a href="mailto:julian@sankergroup.org">email me</a>.<
   <li><a href="/projects/speedreed/">Speedreed</a> — read public-domain books one word at a time.</li>
   <li><a href="/projects/wireworld/">WireWorld</a> — Turing-complete cellular automaton for simulating logic gates.</li>
   <li><a href="/projects/audiovisual/">Audiovisual.js</a> — particle animations driven by your own music file.</li>
-  <li><a href="/life/">Game of Life</a> — random patterns from the LifeWiki collection.</li>
   <li><a href="https://crimemap.app/">Crime Map</a> — interactive map of 911 dispatches, hosted elsewhere.</li>
 </ul>
 

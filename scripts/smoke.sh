@@ -21,7 +21,7 @@ check() { # path expected_status
   if [ "$got" = "$2" ]; then echo "ok    $2 $1"; else echo "FAIL  $1 (wanted $2, got $got)"; fail=1; fi
 }
 
-for p in / /projects/ /photos/ /life/ /blog/ /projects/chemcalc/ /projects/chemcalc/table.php \
+for p in / /projects/ /photos/ /blog/ /projects/chemcalc/ /projects/chemcalc/table.php \
          /projects/openchat/ /projects/apedia/ /projects/speedreed/ /projects/wireworld/ \
          /projects/audiovisual/ /projects/hha-grades/ /projects/umusic/ \
          /projects/coronariskmap/ /projects/lucas-gifs/ /api/pattern.php /assets/site.css; do

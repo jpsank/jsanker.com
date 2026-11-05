@@ -1,10 +1,13 @@
-/* /life/ — Conway's Game of Life on a toroidal grid, seeded from /api/pattern.php.
+/* Home page — Conway's Game of Life on a toroidal grid, seeded from /api/pattern.php.
+   The world is bigger than the default view: zoom out (or "fit all") to see all of it.
    Plain script, no dependencies. parseRLE() is exported for Node tests. */
 (function () {
   'use strict';
 
-  var COLS = 160;
-  var ROWS = 100;
+  var COLS = 480;                // world size (same 16:10 shape as the canvas)
+  var ROWS = 300;
+  var DEFAULT_VIEW = 160;        // cells across the canvas when the page loads
+  var MIN_VIEW = 20;             // most zoomed-in: 20 cells across
   var MAX_LIVE_CELLS = 500000;   // parser safety valve
   var MAX_COORD = 100000;        // ignore anything further out than this
   var FALLBACK_RLE = '#N R-pentomino\nx = 3, y = 3, rule = B3/S23\nb2o$2ob$bo!';
@@ -147,11 +150,17 @@
   var randomBtn = document.getElementById('life-random');
   var clearBtn = document.getElementById('life-clear');
   var speedEl = document.getElementById('life-speed');
+  var zoomInBtn = document.getElementById('life-zoom-in');
+  var zoomOutBtn = document.getElementById('life-zoom-out');
+  var fitBtn = document.getElementById('life-fit');
+  var modeBtn = document.getElementById('life-mode');
   if (!canvas || !canvas.getContext) return;
   var ctx = canvas.getContext('2d');
 
-  var cellPx = 4;
   var colors = { alive: '#111', dead: '#f4f4f4' };
+  var viewCols = DEFAULT_VIEW;   // how many world cells fit across the canvas (zoom)
+  var cx = COLS / 2;             // world coordinates of the centre of the view
+  var cy = ROWS / 2;
 
   function readColors() {
     var cs = getComputedStyle(document.documentElement);
@@ -159,29 +168,59 @@
     colors.dead = cs.getPropertyValue('--accent-bg').trim() || colors.dead;
   }
 
+  function viewRows() { return viewCols * ROWS / COLS; }
+
+  function clampView() {
+    viewCols = Math.min(COLS, Math.max(MIN_VIEW, viewCols));
+    var vr = viewRows();
+    cx = Math.min(COLS - viewCols / 2, Math.max(viewCols / 2, cx));
+    cy = Math.min(ROWS - vr / 2, Math.max(vr / 2, cy));
+  }
+
   function resize() {
     var dpr = window.devicePixelRatio || 1;
-    var s = Math.max(1, Math.floor((canvas.clientWidth * dpr) / COLS));
-    if (s === cellPx && canvas.width === COLS * s) return;
-    cellPx = s;
-    canvas.width = COLS * s;
-    canvas.height = ROWS * s;
+    var w = Math.max(1, Math.round(canvas.clientWidth * dpr));
+    var h = Math.max(1, Math.round(w * ROWS / COLS));
+    if (w === canvas.width && h === canvas.height) return;
+    canvas.width = w;
+    canvas.height = h;
     draw();
   }
 
   function draw() {
-    var s = cellPx;
-    var gap = s >= 4 ? 1 : 0;
+    clampView();
+    var s = canvas.width / viewCols;                 // device pixels per cell
+    var ox = cx - viewCols / 2;
+    var oy = cy - viewRows() / 2;
+    var size = s >= 4 ? s - 1 : Math.ceil(s);        // 1px gap between cells only when zoomed in
     ctx.fillStyle = colors.dead;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = colors.alive;
-    for (var y = 0; y < ROWS; y++) {
+    var x0 = Math.max(0, Math.floor(ox)), x1 = Math.min(COLS, Math.ceil(ox + viewCols));
+    var y0 = Math.max(0, Math.floor(oy)), y1 = Math.min(ROWS, Math.ceil(oy + viewRows()));
+    for (var y = y0; y < y1; y++) {
       var row = y * COLS;
-      for (var x = 0; x < COLS; x++) {
-        if (cur[row + x]) ctx.fillRect(x * s, y * s, s - gap, s - gap);
+      var py = Math.floor((y - oy) * s);
+      for (var x = x0; x < x1; x++) {
+        if (cur[row + x]) ctx.fillRect(Math.floor((x - ox) * s), py, size, size);
       }
     }
     renderStatus();
+  }
+
+  /** Zoom by `factor` keeping the world point under (clientX, clientY) fixed (default: the centre). */
+  function zoomAt(factor, clientX, clientY) {
+    var rect = canvas.getBoundingClientRect();
+    var fx = clientX === undefined ? 0.5 : (clientX - rect.left) / (rect.width || 1);
+    var fy = clientY === undefined ? 0.5 : (clientY - rect.top) / (rect.height || 1);
+    var vr = viewRows();
+    var wx = cx - viewCols / 2 + fx * viewCols;
+    var wy = cy - vr / 2 + fy * vr;
+    viewCols = Math.min(COLS, Math.max(MIN_VIEW, viewCols / factor));
+    vr = viewRows();
+    cx = wx - fx * viewCols + viewCols / 2;
+    cy = wy - fy * vr + vr / 2;
+    draw();
   }
 
   // ----------------------------------------------------------- status ---
@@ -231,6 +270,8 @@
     if (rule && (String(rule.birth) !== String(LIFE.birth) || String(rule.survive) !== String(LIFE.survive))) notes.push('rule ' + p.rule);
     if (cropped) notes.push('pattern is ' + p.width + '×' + p.height + ', showing the top-left ' + COLS + '×' + ROWS);
 
+    cx = COLS / 2;
+    cy = ROWS / 2;
     patternName = p.name || fallbackName || 'untitled pattern';
     patternNote = notes.join(' · ');
     return true;
@@ -330,6 +371,24 @@
     draw();
   });
 
+  zoomInBtn.addEventListener('click', function () { zoomAt(1.5); });
+  zoomOutBtn.addEventListener('click', function () { zoomAt(1 / 1.5); });
+  fitBtn.addEventListener('click', function () { viewCols = COLS; cx = COLS / 2; cy = ROWS / 2; draw(); });
+
+  var moveMode = false;          // false: drag draws cells; true: drag pans the view
+  modeBtn.addEventListener('click', function () {
+    moveMode = !moveMode;
+    modeBtn.textContent = moveMode ? 'drag: move' : 'drag: draw';
+    canvas.classList.toggle('moving', moveMode);
+  });
+
+  // Ctrl/⌘ + wheel (and trackpad pinch, which arrives as ctrl+wheel) zooms; a plain wheel still scrolls the page.
+  canvas.addEventListener('wheel', function (ev) {
+    if (!ev.ctrlKey && !ev.metaKey) return;
+    ev.preventDefault();
+    zoomAt(Math.exp(-Math.max(-100, Math.min(100, ev.deltaY)) * 0.01), ev.clientX, ev.clientY);
+  }, { passive: false });
+
   // ---------------------------------------------------------- drawing ---
 
   var painting = false;
@@ -338,10 +397,10 @@
 
   function cellAt(ev) {
     var rect = canvas.getBoundingClientRect();
-    var w = canvas.clientWidth || 1;
-    var h = canvas.clientHeight || 1;
-    var x = Math.floor(((ev.clientX - rect.left - canvas.clientLeft) / w) * COLS);
-    var y = Math.floor(((ev.clientY - rect.top - canvas.clientTop) / h) * ROWS);
+    var fx = (ev.clientX - rect.left - canvas.clientLeft) / (canvas.clientWidth || 1);
+    var fy = (ev.clientY - rect.top - canvas.clientTop) / (canvas.clientHeight || 1);
+    var x = Math.floor(cx - viewCols / 2 + fx * viewCols);
+    var y = Math.floor(cy - viewRows() / 2 + fy * viewRows());
     return { x: Math.min(COLS - 1, Math.max(0, x)), y: Math.min(ROWS - 1, Math.max(0, y)) };
   }
 
@@ -370,9 +429,19 @@
     }
   }
 
+  var panning = false;
+  var panLast = null;
+
   canvas.addEventListener('pointerdown', function (ev) {
-    if (ev.button !== undefined && ev.button !== 0) return;
+    var wantPan = moveMode || ev.shiftKey || ev.button === 1;
+    if (!wantPan && ev.button !== undefined && ev.button !== 0) return;
     ev.preventDefault();
+    if (wantPan) {
+      panning = true;
+      panLast = { x: ev.clientX, y: ev.clientY };
+      try { canvas.setPointerCapture(ev.pointerId); } catch (e) { /* not fatal */ }
+      return;
+    }
     var c = cellAt(ev);
     painting = true;
     paintValue = cur[c.y * COLS + c.x] ? 0 : 1;   // first cell decides draw vs erase
@@ -383,6 +452,14 @@
   });
 
   canvas.addEventListener('pointermove', function (ev) {
+    if (panning) {
+      var k = viewCols / (canvas.clientWidth || 1);       // world cells per CSS pixel
+      cx -= (ev.clientX - panLast.x) * k;
+      cy -= (ev.clientY - panLast.y) * k;
+      panLast = { x: ev.clientX, y: ev.clientY };
+      draw();
+      return;
+    }
     if (!painting) return;
     var c = cellAt(ev);
     if (lastCell && c.x === lastCell.x && c.y === lastCell.y) return;
@@ -391,7 +468,7 @@
     draw();
   });
 
-  function stopPainting() { painting = false; lastCell = null; }
+  function stopPainting() { painting = false; panning = false; lastCell = null; }
   canvas.addEventListener('pointerup', stopPainting);
   canvas.addEventListener('pointercancel', stopPainting);
 
