@@ -1,0 +1,243 @@
+/* uMusic: original style.css (verbatim, below) on top of the small slice of Bootstrap 3 the
+   original page relied on (Flask-Bootstrap): base typography, and the Glyphicons icons, which
+   are re-drawn here as local SVG masks because the original loaded the icon font from a CDN. */
+
+html { background: #000; }
+body {
+    margin: 0;
+    padding: 0;
+    max-width: none;
+    overflow-x: hidden;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.42857143;
+    color: #333;
+    background-color: #fff;
+}
+body img { max-width: none; height: auto; vertical-align: middle; border: 0; }
+body p { margin: 0 0 10px; }
+body progress { display: inline-block; vertical-align: baseline; }
+[hidden], template { display: none !important; }
+
+.glyphicon {
+    position: relative;
+    top: 1px;
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    line-height: 1;
+    font-style: normal;
+    background-color: currentColor;
+    -webkit-mask: center / contain no-repeat;
+    mask: center / contain no-repeat;
+}
+.glyphicon-play { -webkit-mask-image: url(icons/play.svg); mask-image: url(icons/play.svg); }
+.glyphicon-pause { -webkit-mask-image: url(icons/pause.svg); mask-image: url(icons/pause.svg); }
+.glyphicon-step-backward { -webkit-mask-image: url(icons/step-backward.svg); mask-image: url(icons/step-backward.svg); }
+.glyphicon-step-forward { -webkit-mask-image: url(icons/step-forward.svg); mask-image: url(icons/step-forward.svg); }
+.glyphicon-random { -webkit-mask-image: url(icons/random.svg); mask-image: url(icons/random.svg); }
+
+/* Demo notice (not in the original): a slim line, styled to sit quietly on the black page */
+.demo-note {
+    margin: 0;
+    padding: 6px 12px;
+    text-align: center;
+    font-size: 12px;
+    color: #777;
+}
+body .demo-note { margin: 0; }
+.demo-note a, .demo-note a:visited { color: #999; }
+.demo-note a:hover { color: white; }
+
+/* ---------- original style.css ---------- */
+
+body {
+    margin: 0;
+    background-color: black;
+}
+
+
+.logo {
+    text-align: center;
+}
+.logo img {
+    width: 20vw;
+}
+
+
+.flex {
+    display: flex;
+    flex-wrap: wrap;
+}
+
+
+
+/* Track Elements */
+
+.track {
+    width: 10%;
+    position: relative;
+    cursor: pointer;
+}
+.track:hover {
+    border: 2px solid black;
+}
+.track img {
+    width: 100%;
+}
+.track.done img {
+    opacity: 50%;
+}
+
+@media (max-width: 1000px) {
+    .track {
+        width: 12.5%;
+    }
+}
+@media (max-width: 700px) {
+    .track {
+        width: 20%;
+    }
+}
+@media (max-width: 500px) {
+    .track {
+        width: 25%;
+    }
+}
+
+
+
+/* Audio Control Buttons */
+
+i.control-btn {
+    font-size: 50px;
+    color: #111;
+    cursor: pointer;
+    -webkit-transition: .1s ease color;
+    transition: .1s ease color;
+}
+i.control-btn:hover {
+    color: #555;
+}
+i.control-btn:active {
+    color: white;
+}
+@media (max-width: 500px) {
+    i.control-btn {
+        font-size: 10vw;
+    }
+}
+i.b-prev, i.b-next {
+    position: absolute;
+    text-align: center;
+    top: 50%;
+}
+i.b-prev {
+    left: 50%;
+    transform: translate(calc(-200px - 100%), -50%);
+}
+i.b-next {
+    right: 50%;
+    transform: translate(calc(200px + 100%), -50%);
+}
+i.b-play {
+    font-size: 10em;
+    position: absolute;
+    text-align: center;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+}
+@media (max-width: 600px) {
+    i.b-prev {
+        left: 0;
+        transform: translate(0, -50%);
+    }
+    i.b-next {
+        right: 0;
+        transform: translate(0, -50%);
+    }
+}
+
+i.b-shuffle {
+    font-size: 35px;
+    color: #444;
+    position: absolute;
+    right: 4vw;
+    top: 4vw;
+}
+i.b-shuffle:hover {
+    color: #aaa;
+}
+i.b-shuffle:active {
+    color: white;
+}
+@media (max-width: 700px) {
+    i.b-shuffle {
+        font-size: 25px;
+    }
+}
+
+
+
+/* Audio Control Elements */
+
+#media {
+    text-align: center;
+}
+
+#current_track {
+    background-color: black;
+    height: 400px;
+    width: 100%;
+    text-align: center;
+    position: relative;
+}
+#current_track img {
+    border-radius: 40px;
+    height: 100%;
+    width: auto;
+}
+#current_track i.b-play {
+    color: transparent;
+    -webkit-transition: .1s ease color;
+    transition: .1s ease color;
+}
+#current_track i.b-play:hover {
+    color: white;
+}
+#current_track i.b-play.glyphicon-play {
+    color: white;
+}
+@media (max-width: 500px) {
+    #current_track {
+        height: auto;
+    }
+    #current_track img {
+        width: 80%;
+        height: auto;
+    }
+}
+
+#audioProgress {
+    cursor: pointer;
+    width: 350px;
+    height: 10px;
+    background-color: #111;
+    color: #555;
+    border: none;
+    margin: 20px 0 20px 0;
+}
+#audioProgress::-moz-progress-bar { background-color: #555; }
+#audioProgress::-webkit-progress-bar { background-color: #111; }
+#audioProgress::-webkit-progress-value { background-color: #555; }
+
+
+/* Scrolling */
+
+#sentinel {
+    height: 50px;
+}
+#sentinel #title {
+    color: white;
+}

@@ -1,0 +1,45 @@
+/* /life/ — canvas, status line and text-link controls. Colours come from site.css variables. */
+
+#life-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 1rem 0 .5rem;
+  border: 1px solid var(--rule);
+  background: var(--accent-bg);
+  image-rendering: pixelated;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.life-status { margin: 0 0 .5rem; min-height: 1.5em; }
+
+.life-controls {
+  display: flex;
+  flex-flow: row wrap;
+  align-items: center;
+  gap: .25rem 1.25rem;
+  margin: 0;
+}
+
+.life-controls button {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--link);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.life-controls button:hover { border: 0; }
+
+.life-speed { display: inline-flex; align-items: center; gap: .5rem; }
+.life-controls label { display: inline; margin: 0; color: var(--muted); font-size: inherit; }
+.life-controls input[type="range"] {
+  width: 8rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  accent-color: var(--link);
+}

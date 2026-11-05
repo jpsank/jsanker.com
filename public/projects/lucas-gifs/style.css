@@ -1,0 +1,22 @@
+/* Lucas Gifs: the original inline <style>, moved to a file (CSP forbids inline styles). */
+body {
+  background-image: url('/projects/lucas-gifs/media/background.jpg');
+  margin-left: 20%;
+  margin-right: 20%;
+  border: 2px dotted black;
+  padding: 10px 10px 10px 10px;
+  font-family: sans-serif;
+  font-size: 25px;
+}
+
+/* The original was rendered in quirks mode, where the first heading had no top margin. */
+h2 { margin-top: 0; }
+
+/* The original just overflowed on small screens; let the images shrink instead. */
+@media (max-width: 900px) { img { max-width: 100%; height: auto; } }
+
+/* Additions: the note under the heading and the back link. */
+.blurb, .back { font-size: 16px; }
+
+/* Reduced motion only: a still frame, click to play. */
+img.still { cursor: pointer; }

@@ -1,0 +1,114 @@
+
+body {
+    font-size: medium;
+}
+
+@media (max-width: 1000px) {
+    h1 {
+        font-size: 2em;
+        text-align: center;
+    }
+}
+
+.red {
+    color: red;
+}
+.grey {
+    color: grey;
+}
+
+
+.scrollable {
+    overflow-x: scroll;
+}
+
+
+@media (max-width: 1000px) {
+    #ranked {
+        font-size: small;
+    }
+}
+
+
+.dates {
+    padding: 8px;
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    font-size: small;
+    background-color: whitesmoke;
+    /*background-color: rgb(204, 210, 211);*/
+}
+.date {
+    margin: 3px;
+    padding: 2px;
+    border-radius: 1px;
+    color: black;
+    background: white;
+    box-shadow: 0 0 3px rgba(0,0,0,0.1);
+}
+.date:hover {
+    text-decoration: none;
+}
+.date.selected {
+    background-color: lightblue;
+}
+.date.selected:hover {
+    color: black;
+    text-decoration: none;
+}
+
+
+
+
+#map { height: 620px; }
+
+.info {
+    padding: 6px 8px;
+    font: 14px/16px Arial, Helvetica, sans-serif;
+    background: white;
+    background: rgba(255,255,255,0.8);
+    box-shadow: 0 0 15px rgba(0,0,0,0.2);
+    border-radius: 5px;
+}
+.info h4 {
+    margin: 0 0 5px;
+    color: #777;
+}
+
+.legend {
+    line-height: 18px;
+    color: #555;
+}
+.legend span {
+    display: block;
+    height: 18px;
+}
+.legend i {
+    width: 18px;
+    height: 100%;
+    float: left;
+    margin-right: 8px;
+    opacity: 0.7;
+}
+
+/* ---- additions for the frozen snapshot (not in the original) ---- */
+
+/* the original drew a Mapbox tile layer here; its sea colour stands in for it */
+#map { background: rgb(204, 210, 211); }
+
+.player {
+    padding: 6px 8px;
+    display: flex;
+    align-items: center;
+    background-color: whitesmoke;
+    font-size: small;
+}
+.player button { margin-right: 8px; min-width: 56px; }
+.player input[type="range"] { flex: 1 1 auto; min-width: 0; }
+.player .when { margin-left: 8px; min-width: 70px; text-align: right; }
+
+.sr-only-note {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}

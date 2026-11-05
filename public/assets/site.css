@@ -1,0 +1,141 @@
+/* jsanker.com — text first. Plain type, one column, light/dark by system setting.
+   Inspired by lkellar.org. */
+
+:root {
+  color-scheme: light dark;
+  --fg: #111;
+  --bg: #fff;
+  --muted: #666;
+  --rule: #ddd;
+  --link: #0645ad;
+  --visited: #6b3fa0;
+  --accent-bg: #f4f4f4;
+  --error: #b00020;
+  --ok: #1a7f37;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #fff;
+    --bg: #1e1e1e;
+    --muted: #a0a0a0;
+    --rule: #444;
+    --link: #9e9ef8;
+    --visited: #caaeeb;
+    --accent-bg: #2a2a2a;
+    --error: #ff8a8a;
+    --ok: #7ee787;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0 auto;
+  padding: 0 16px 48px;
+  max-width: 42rem;
+  font-family: Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  color: var(--fg);
+  background: var(--bg);
+  overflow-x: hidden;
+}
+
+a { color: var(--link); }
+a:visited { color: var(--visited); }
+
+h1, h2, h3 { line-height: 1.25; }
+h1 { font-size: 1.8rem; margin: 1.2em 0 .4em; }
+h2 { font-size: 1.3rem; margin: 1.6em 0 .4em; }
+h3 { font-size: 1.05rem; margin: 1.4em 0 .3em; }
+
+img { max-width: 100%; height: auto; }
+
+code, pre { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .92em; }
+pre { overflow-x: auto; padding: .75em; background: var(--accent-bg); }
+
+hr { border: 0; border-top: 1px solid var(--rule); margin: 2em 0; }
+
+/* header / footer ---------------------------------------------------- */
+
+header.site {
+  display: flex;
+  flex-flow: row wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: .25rem 1.5rem;
+  padding: 20px 0 8px;
+  border-bottom: 1px solid var(--rule);
+}
+header.site .name { font-size: 1.25rem; font-weight: bold; text-decoration: none; color: var(--fg); }
+header.site nav { display: flex; gap: 1.25rem; }
+
+.crumbs { margin: .75rem 0 0; color: var(--muted); font-size: .92rem; }
+
+footer.site {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: .92rem;
+}
+
+/* content helpers ---------------------------------------------------- */
+
+.muted { color: var(--muted); }
+.small { font-size: .9rem; }
+.error { color: var(--error); }
+.ok { color: var(--ok); }
+
+ul.plain { list-style: none; padding: 0; }
+ul.plain li { margin: .5em 0; }
+
+.portrait {
+  float: right;
+  width: 9rem;
+  height: 9rem;
+  margin: .4rem 0 .5rem 1rem;
+  object-fit: cover;
+  border-radius: 2px;
+}
+
+.note {
+  padding: .6em .9em;
+  border: 1px dotted var(--fg);
+  margin: 1.5em 0;
+}
+
+.retired { opacity: .8; }
+
+/* forms -------------------------------------------------------------- */
+
+input, textarea, select, button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--muted);
+  border-radius: 3px;
+  padding: .35em .55em;
+  max-width: 100%;
+}
+input[type="text"], input[type="password"], input[type="email"], input[type="search"], textarea {
+  width: 100%;
+}
+input[type="file"] { border: 0; padding-left: 0; }
+button, input[type="submit"] { cursor: pointer; background: var(--accent-bg); }
+button:hover, input[type="submit"]:hover { border-color: var(--fg); }
+label { display: block; margin-top: .9em; font-size: .92rem; color: var(--muted); }
+form.stack > * + * { margin-top: .5em; }
+.inline-form { display: inline; }
+.inline-form button { border: 0; background: none; padding: 0; color: var(--link); text-decoration: underline; }
+
+/* photos ------------------------------------------------------------- */
+
+figure { margin: 1.5rem 0; }
+figcaption { color: var(--muted); font-size: .9rem; }
+
+/* full-screen toys ---------------------------------------------------- */
+
+body.bare { max-width: none; padding: 0; overflow: hidden; }
