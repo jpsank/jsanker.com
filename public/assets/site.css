@@ -30,7 +30,7 @@
 
 * { box-sizing: border-box; }
 
-html { -webkit-text-size-adjust: 100%; }
+html { -webkit-text-size-adjust: 100%; font-size: 93.75%; } /* 15px at default browser settings; everything in rem scales with it */
 
 body {
   margin: 0 auto;
@@ -47,8 +47,8 @@ a { color: var(--link); }
 a:visited { color: var(--visited); }
 
 h1, h2, h3 { line-height: 1.25; }
-h1 { font-size: 1.8rem; margin: 1.2em 0 .4em; }
-h2 { font-size: 1.3rem; margin: 1.6em 0 .4em; }
+h1 { font-size: 1.6rem; margin: 1.2em 0 .4em; }
+h2 { font-size: 1.2rem; margin: 1.6em 0 .4em; }
 h3 { font-size: 1.05rem; margin: 1.4em 0 .3em; }
 
 img { max-width: 100%; height: auto; }
