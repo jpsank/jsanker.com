@@ -61,9 +61,24 @@ function is_https(): bool
         || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
 }
 
+/**
+ * The visitor's IP, used only to key rate limits (never stored in clear).
+ *
+ * Behind a Cloudflare Tunnel every request reaches PHP from the `cloudflared` container, so REMOTE_ADDR is
+ * a private address; Cloudflare puts the real visitor in CF-Connecting-IP (and overwrites any value a
+ * visitor sends). That header is believed ONLY when the direct peer is a private/loopback address, i.e. when
+ * the request came through the tunnel. In the Pi setup the container publishes no ports, so nothing else can
+ * reach it; if you expose the container to an untrusted network some other way, remove this.
+ */
 function client_ip(): string
 {
-    return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    $peer = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    $cf = $_SERVER['HTTP_CF_CONNECTING_IP'] ?? '';
+    if ($cf !== '' && filter_var($cf, FILTER_VALIDATE_IP) !== false
+        && filter_var($peer, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) {
+        return $cf;
+    }
+    return $peer;
 }
 
 /** Stable per-install secret, generated on first use. Used to hash IPs for rate limiting. */

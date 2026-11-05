@@ -21,8 +21,8 @@ docker/            Caddyfile + php.ini
 firestore.rules    Firestore security rules for the blog (deploy with the Firebase CLI)
 scripts/smoke.sh   builds the image, boots it, checks routes and security headers
 scripts/backup.sh, scripts/restore.sh   production backup / restore of the data volume
-compose.prod.yaml  production compose file (80/443, restart on boot, named volumes)
-docs/DEPLOY-ORACLE.md   step-by-step deploy on Oracle Cloud Always Free
+compose.prod.yaml  production compose file (site + Cloudflare Tunnel, restart on boot, named volumes)
+docs/DEPLOY-PI.md       step-by-step deploy on a Raspberry Pi behind a Cloudflare Tunnel
 ```
 
 ## Run locally
@@ -36,11 +36,13 @@ scripts/test.sh           # PHP lint + word-filter tests
 
 ## Deploy
 
-Step-by-step for a free Oracle Cloud VM, including DNS, importing the old data and nightly backups:
-**[docs/DEPLOY-ORACLE.md](docs/DEPLOY-ORACLE.md)**. Any host that runs a Docker image with a persistent disk works
-(a VPS, Fly.io, Railway…); use `compose.prod.yaml`. Netlify can't host this app (no PHP, no persistent disk).
+Step-by-step for a Raspberry Pi at home behind a free Cloudflare Tunnel, including rescuing the old SD card,
+importing the old data and nightly backups: **[docs/DEPLOY-PI.md](docs/DEPLOY-PI.md)**. Any host that runs a Docker
+image with a persistent disk works (a VPS, Fly.io, Railway…); `compose.prod.yaml` assumes the tunnel, so on a VPS
+publish ports 80/443 with an override and set `SERVER_NAME`. Netlify can't host this app (no PHP, no persistent disk).
 
-- Set `SERVER_NAME=jsanker.com` for automatic HTTPS (leave unset for plain HTTP on :80).
+- Behind the tunnel leave `SERVER_NAME` unset (Cloudflare does the HTTPS). On a host that faces the internet
+  directly, set `SERVER_NAME=jsanker.com` for Caddy's automatic HTTPS.
 - Mount a **persistent volume at `/var/lib/jsanker`** — SQLite databases (OpenChat, APedia), sessions,
   rate-limit state, and uploads live there. Also persist `/data` (Caddy's certificates).
 - Set the `FIREBASE_*` variables from `.env.example` for the blog.
@@ -48,8 +50,9 @@ Step-by-step for a free Oracle Cloud VM, including DNS, importing the old data a
   anonymous public board with no moderation).
 - Run a **single instance**: SQLite is on a local volume.
 - **Back up `/var/lib/jsanker`**: `scripts/backup.sh` (nightly cron) and copy the result off the server.
-- Rate limiting keys on the client IP as PHP sees it. Behind a proxy, make sure Caddy's
-  `trusted_proxies` (see `docker/Caddyfile`) covers it, or everyone shares one bucket.
+- Rate limiting keys on `client_ip()` (`src/bootstrap.php`): Cloudflare's `CF-Connecting-IP` when the direct peer
+  is a private address (the tunnel), else the connection's address. Behind some other proxy, adapt it, or
+  everyone shares one bucket.
 
 ## Old projects keep their original look
 

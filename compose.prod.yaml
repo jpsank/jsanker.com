@@ -1,28 +1,42 @@
-# Production (a single small VM, e.g. Oracle Cloud Always Free). See docs/DEPLOY-ORACLE.md.
+# Production on a small always-on machine (e.g. a Raspberry Pi at home) behind a Cloudflare Tunnel.
+# See docs/DEPLOY-PI.md.
 #
 #   docker compose -f compose.prod.yaml up -d --build
 #
-# Unlike compose.yaml, the code is baked into the image (nothing is bind-mounted), the container
-# restarts on boot, and it listens on 80/443 itself (Caddy gets and renews the HTTPS certificate).
+# Unlike compose.yaml, the code is baked into the image (nothing is bind-mounted) and the containers restart
+# on boot. The site publishes NO ports: the `tunnel` container dials out to Cloudflare, which terminates HTTPS
+# and forwards requests to http://web:80 over the private compose network. Nothing needs opening on your router.
 #
-# Configuration comes from .env next to this file (copy .env.example): SERVER_NAME and FIREBASE_*.
-# SERVER_NAME defaults to plain HTTP on :80 so a fresh deploy can be tested by IP before DNS points here.
+# Configuration: .env (copy .env.example; FIREBASE_*) and tunnel.env (copy tunnel.env.example; TUNNEL_TOKEN).
+#
+# To run the site WITHOUT a tunnel (testing by IP, or a VPS that terminates HTTPS itself), put the web
+# service's ports back via a compose override, e.g. `ports: ["80:80", "443:443"]`, and set SERVER_NAME.
 services:
   web:
     build: .
     image: jsanker-web
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"   # HTTP/3
     environment:
-      SERVER_NAME: ${SERVER_NAME:-:80}
+      SERVER_NAME: ${SERVER_NAME:-:80}     # plain HTTP inside the compose network; Cloudflare does the HTTPS
     env_file:
       - .env
     volumes:
       - appdata:/var/lib/jsanker   # SQLite databases, sessions, uploads  <- BACK THIS UP (scripts/backup.sh)
-      - caddy_data:/data           # HTTPS certificates
+      - caddy_data:/data           # Caddy state (certificates, when SERVER_NAME is a real host name)
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    env_file:
+      - tunnel.env                 # contains only TUNNEL_TOKEN=... (kept out of the web container)
+    depends_on:
+      - web
     logging:
       driver: json-file
       options:

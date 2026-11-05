@@ -11,7 +11,7 @@
 #                     copied there (needs rclone installed and configured: `rclone config`)
 #
 # A backup that only lives on the same server is not enough: pull it to another machine too
-# (see docs/DEPLOY-ORACLE.md), e.g.  rsync -az ubuntu@SERVER:/srv/jsanker-backups/ ~/jsanker-backups/
+# (see docs/DEPLOY-PI.md), e.g.  rsync -az pi@SERVER:/srv/jsanker-backups/ ~/jsanker-backups/
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
