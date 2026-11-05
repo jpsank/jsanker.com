@@ -25,7 +25,7 @@ function asset(string $path): string
  *   scripts      extra scripts: 'path.js' or ['src' => 'path.js', 'module' => true]
  *   bare         true = no header/footer (full-screen toys like WireWorld)
  *   legacy       true = original puffyboa.xyz look: loads /assets/legacy/shared.css and prints the
- *                original breadcrumb bar from `crumbs` (jsanker.com / Project / Page); no new site chrome.
+ *                original breadcrumb bar from `crumbs` (jsanker.com / Projects / Project / Page); no new site chrome.
  *                The page prints its own original markup and passes its original CSS via `styles`.
  *                Add `nobar => true` to omit the breadcrumb bar (standalone originals).
  */
@@ -64,7 +64,7 @@ function page_start(array $o = []): void
     if ($legacy && empty($o['nobar'])) {
         // The original "puffyboa.xyz / Project / Page" breadcrumb bar, now pointing home to jsanker.com.
         // (Standalone originals such as HHA Grades and uMusic pass 'nobar' => true to leave it out.)
-        echo '<div class="back-to-home"><a href="/">jsanker.com</a>';
+        echo '<div class="back-to-home"><a href="/">jsanker.com</a><a href="/projects/">Projects</a>';
         foreach ($o['crumbs'] ?? [] as [$label, $url]) {
             echo '<a href="' . e((string) $url) . '">' . e($label) . '</a>';
         }
