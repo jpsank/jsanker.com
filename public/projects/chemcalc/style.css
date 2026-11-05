@@ -127,11 +127,12 @@ body {
 
 
 table#periodic-table {
-    margin: -120px auto 0 auto;
+    margin: calc(-1 * min(120px, 11vw)) auto 0 auto;
     border-collapse: collapse;
     table-layout: fixed;
-    width: 1100px;
-    height: 550px;
+    width: 100%;
+    max-width: 1100px;          /* the original size; it shrinks with the window instead of scrolling */
+    height: min(550px, 48vw);
 }
 
 table#periodic-table td {
@@ -198,30 +199,28 @@ table#periodic-table td a {
 #legend {
     display: flex;
     flex-wrap: wrap;
-    width: 500px;
-    margin-top: 30px;
-    margin-left: 325px;
-    font-size: .8em;
+    box-sizing: border-box;
+    max-width: 1100px;          /* same width as the table, so the legend can sit in its empty gap */
+    margin: 30px auto 0 auto;
+    padding-left: 13%;          /* the gap above the transition metals spans columns 3-12 of 18 */
+    padding-right: 35%;
+    font-size: min(.8em, 1.25vw);
 }
 #legend div {
     padding: 2px;
     border: 1px solid black;
     margin: 2px;
 }
-@media(max-width: 1400px) {
+@media(max-width: 800px) {
+    /* too narrow for the legend to fit in the gap: put it above the table instead */
     #legend {
-        margin-left: 20%;
+        padding: 0;
+        font-size: .8em;
+        margin: 10px auto 10px auto;
+        justify-content: center;
     }
-}
-@media(max-width: 1200px) {
-    #legend {
-        margin-left: 175px;
-        margin-top: 30px;
-    }
-}
-@media(max-width: 600px) {
-    #legend {
-        margin-top: 130px;
+    table#periodic-table {
+        margin-top: 0;
     }
 }
 
@@ -232,5 +231,5 @@ table#periodic-table td a {
     box-sizing: border-box;
 }
 table#periodic-table {
-    font-size: medium;
+    font-size: min(16px, 1.45vw);   /* 16px on wide screens, smaller as the window narrows */
 }
