@@ -4,8 +4,14 @@
 (function () {
   'use strict';
 
-  var COLS = 480;                // world size (same 16:10 shape as the canvas)
-  var ROWS = 300;
+  var DEFAULT_COLS = 480;        // the world starts this big...
+  var DEFAULT_ROWS = 300;
+  var MAX_DIM = 8192;            // ...and grows to fit a bigger pattern, up to these limits
+  var MAX_CELLS = 4000000;
+  var PAD = 60;                  // empty margin added around a pattern that forces the world to grow
+  var COLS = DEFAULT_COLS;
+  var ROWS = DEFAULT_ROWS;
+  var CANVAS_ASPECT = 0.625;     // canvas height / width (16:10); the world may be any shape
   var DEFAULT_VIEW = 160;        // cells across the canvas when the page loads
   var MIN_VIEW = 20;             // most zoomed-in: 20 cells across
   var MAX_LIVE_CELLS = 500000;   // parser safety valve
@@ -110,6 +116,14 @@
   var survive = LIFE.survive;
   var cur = new Uint8Array(COLS * ROWS);
   var nxt = new Uint8Array(COLS * ROWS);
+
+  /** Replace the world with an empty cols x rows grid. */
+  function setWorld(cols, rows) {
+    COLS = cols;
+    ROWS = rows;
+    cur = new Uint8Array(COLS * ROWS);
+    nxt = new Uint8Array(COLS * ROWS);
+  }
   var generation = 0;
   var population = 0;
 
@@ -157,7 +171,7 @@
   if (!canvas || !canvas.getContext) return;
   var ctx = canvas.getContext('2d');
 
-  var colors = { alive: '#111', dead: '#f4f4f4' };
+  var colors = { alive: '#111', dead: '#f4f4f4', outside: '#fff' };
   var viewCols = DEFAULT_VIEW;   // how many world cells fit across the canvas (zoom)
   var cx = COLS / 2;             // world coordinates of the centre of the view
   var cy = ROWS / 2;
@@ -166,21 +180,25 @@
     var cs = getComputedStyle(document.documentElement);
     colors.alive = cs.getPropertyValue('--fg').trim() || colors.alive;
     colors.dead = cs.getPropertyValue('--accent-bg').trim() || colors.dead;
+    colors.outside = cs.getPropertyValue('--bg').trim() || colors.outside;
   }
 
-  function viewRows() { return viewCols * ROWS / COLS; }
+  function viewRows() { return viewCols * CANVAS_ASPECT; }
+
+  /** Widest view = the whole world visible (letterboxed if the world isn't 16:10). */
+  function maxView() { return Math.max(COLS, ROWS / CANVAS_ASPECT); }
 
   function clampView() {
-    viewCols = Math.min(COLS, Math.max(MIN_VIEW, viewCols));
+    viewCols = Math.min(maxView(), Math.max(MIN_VIEW, viewCols));
     var vr = viewRows();
-    cx = Math.min(COLS - viewCols / 2, Math.max(viewCols / 2, cx));
-    cy = Math.min(ROWS - vr / 2, Math.max(vr / 2, cy));
+    cx = viewCols >= COLS ? COLS / 2 : Math.min(COLS - viewCols / 2, Math.max(viewCols / 2, cx));
+    cy = vr >= ROWS ? ROWS / 2 : Math.min(ROWS - vr / 2, Math.max(vr / 2, cy));
   }
 
   function resize() {
     var dpr = window.devicePixelRatio || 1;
     var w = Math.max(1, Math.round(canvas.clientWidth * dpr));
-    var h = Math.max(1, Math.round(w * ROWS / COLS));
+    var h = Math.max(1, Math.round(w * CANVAS_ASPECT));
     if (w === canvas.width && h === canvas.height) return;
     canvas.width = w;
     canvas.height = h;
@@ -193,8 +211,10 @@
     var ox = cx - viewCols / 2;
     var oy = cy - viewRows() / 2;
     var size = s >= 4 ? s - 1 : Math.ceil(s);        // 1px gap between cells only when zoomed in
-    ctx.fillStyle = colors.dead;
+    ctx.fillStyle = colors.outside;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = colors.dead;                     // the world itself
+    ctx.fillRect(Math.round(-ox * s), Math.round(-oy * s), Math.ceil(COLS * s), Math.ceil(ROWS * s));
     ctx.fillStyle = colors.alive;
     var x0 = Math.max(0, Math.floor(ox)), x1 = Math.min(COLS, Math.ceil(ox + viewCols));
     var y0 = Math.max(0, Math.floor(oy)), y1 = Math.min(ROWS, Math.ceil(oy + viewRows()));
@@ -216,7 +236,7 @@
     var vr = viewRows();
     var wx = cx - viewCols / 2 + fx * viewCols;
     var wy = cy - vr / 2 + fy * vr;
-    viewCols = Math.min(COLS, Math.max(MIN_VIEW, viewCols / factor));
+    viewCols = Math.min(maxView(), Math.max(MIN_VIEW, viewCols / factor));
     vr = viewRows();
     cx = wx - fx * viewCols + viewCols / 2;
     cy = wy - fy * vr + vr / 2;
@@ -247,10 +267,25 @@
     population = 0;
   }
 
-  /** Put a parsed pattern in the middle of an empty grid. Returns false if it had no cells. */
+  /** Put a parsed pattern in the middle of an empty grid, growing the world if it doesn't fit.
+      Returns false if it had no cells. */
   function place(p, fallbackName) {
     if (!p.cells.length) return false;
-    clearGrid();
+
+    // Size the world: the default, or bigger (pattern + margin) up to the limits.
+    var wantCols = Math.max(DEFAULT_COLS, p.width + 2 * PAD);
+    var wantRows = Math.max(DEFAULT_ROWS, p.height + 2 * PAD);
+    wantCols = Math.min(wantCols, MAX_DIM);
+    wantRows = Math.min(wantRows, MAX_DIM);
+    if (wantCols * wantRows > MAX_CELLS) {
+      var k = Math.sqrt(MAX_CELLS / (wantCols * wantRows));
+      wantCols = Math.max(DEFAULT_COLS, Math.floor(wantCols * k));
+      wantRows = Math.max(DEFAULT_ROWS, Math.floor(wantRows * k));
+    }
+    var grew = wantCols > DEFAULT_COLS || wantRows > DEFAULT_ROWS;
+    if (wantCols !== COLS || wantRows !== ROWS) setWorld(wantCols, wantRows);
+    clearGrid();                                   // empty cells, generation 0
+
     var ox = Math.max(0, Math.floor((COLS - p.width) / 2));
     var oy = Math.max(0, Math.floor((ROWS - p.height) / 2));
     var cropped = false;
@@ -262,16 +297,20 @@
     }
     countPopulation();
 
+    // Frame the pattern: the default view, or zoomed out just enough to show all of it.
+    cx = ox + p.width / 2;
+    cy = oy + p.height / 2;
+    viewCols = Math.max(DEFAULT_VIEW, Math.min(p.width, COLS) * 1.1, Math.min(p.height, ROWS) * 1.1 / CANVAS_ASPECT);
+
     var rule = parseRule(p.rule);
     var notes = [];
     if (p.rule && !rule) notes.push('rule ' + p.rule + ' not supported, using B3/S23');
     if (rule) { birth = rule.birth; survive = rule.survive; }
     else { birth = LIFE.birth; survive = LIFE.survive; }
     if (rule && (String(rule.birth) !== String(LIFE.birth) || String(rule.survive) !== String(LIFE.survive))) notes.push('rule ' + p.rule);
-    if (cropped) notes.push('pattern is ' + p.width + '×' + p.height + ', showing the top-left ' + COLS + '×' + ROWS);
+    if (grew && !cropped) notes.push('grid grown to ' + COLS + '×' + ROWS + ' to fit');
+    if (cropped) notes.push('pattern is ' + p.width + '×' + p.height + ', too big even for the largest grid (' + COLS + '×' + ROWS + '), showing the top-left');
 
-    cx = COLS / 2;
-    cy = ROWS / 2;
     patternName = p.name || fallbackName || 'untitled pattern';
     patternNote = notes.join(' · ');
     return true;
@@ -328,7 +367,9 @@
     acc += dt;
     var interval = 1000 / speed();
     var steps = 0;
-    while (acc >= interval && steps < 8) { step(); acc -= interval; steps++; }
+    var t0 = performance.now();
+    while (acc >= interval && steps < 8 && performance.now() - t0 < 12) { step(); acc -= interval; steps++; }
+    if (acc > interval * 8) acc = interval * 8;     // big grids can't keep up: slow down rather than pile up
     if (steps) draw();
     rafId = requestAnimationFrame(frame);
   }
@@ -373,7 +414,7 @@
 
   zoomInBtn.addEventListener('click', function () { zoomAt(1.5); });
   zoomOutBtn.addEventListener('click', function () { zoomAt(1 / 1.5); });
-  fitBtn.addEventListener('click', function () { viewCols = COLS; cx = COLS / 2; cy = ROWS / 2; draw(); });
+  fitBtn.addEventListener('click', function () { viewCols = maxView(); cx = COLS / 2; cy = ROWS / 2; draw(); });
 
   var moveMode = false;          // false: drag draws cells; true: drag pans the view
   modeBtn.addEventListener('click', function () {
