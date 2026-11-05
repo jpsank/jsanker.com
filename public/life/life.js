@@ -104,8 +104,88 @@
     return { birth: birth, survive: survive };
   }
 
+  // ----------------------------------------------------- packed step ---
+
+  /**
+   * One generation on a bit-packed torus. Cells live in Int32Array rows of W words (W*32 columns, bit i of
+   * word j = column 32*j + i); `cur` is read, `nxt` is written. rule = { birth, survive } (parseRule result).
+   *
+   * For every word, the eight neighbour bitmasks (the three rows above/at/below, shifted left and right by
+   * one cell, pulling the edge bit in from the adjacent word) are added with bitwise full/half adders, so
+   * 32 cells are counted at once. B3/S23 takes a short fast path; any other rule goes through the
+   * generic path, which builds the exact neighbour count as four bit planes and applies the rule tables.
+   */
+  function stepPacked(cur, nxt, W, H, rule) {
+    var birth = rule.birth;
+    var survive = rule.survive;
+    var life = true;
+    for (var n = 0; n < 9; n++) {
+      if (birth[n] !== (n === 3 ? 1 : 0) || survive[n] !== (n === 2 || n === 3 ? 1 : 0)) life = false;
+    }
+    var bn = [], sn = [];                       // generic path: neighbour counts that give birth / survival
+    for (var k = 0; k < 9; k++) { if (birth[k]) bn.push(k); if (survive[k]) sn.push(k); }
+
+    for (var y = 0; y < H; y++) {
+      var upO = (y === 0 ? H - 1 : y - 1) * W;
+      var midO = y * W;
+      var dnO = (y === H - 1 ? 0 : y + 1) * W;
+      for (var j = 0; j < W; j++) {
+        var jp = j === 0 ? W - 1 : j - 1;
+        var jn = j === W - 1 ? 0 : j + 1;
+
+        var u = cur[upO + j];
+        var uL = (u << 1) | (cur[upO + jp] >>> 31);     // the cell to the left of each bit
+        var uR = (u >>> 1) | (cur[upO + jn] << 31);     // ... and to the right
+        var m = cur[midO + j];
+        var mL = (m << 1) | (cur[midO + jp] >>> 31);
+        var mR = (m >>> 1) | (cur[midO + jn] << 31);
+        var d = cur[dnO + j];
+        var dL = (d << 1) | (cur[dnO + jp] >>> 31);
+        var dR = (d >>> 1) | (cur[dnO + jn] << 31);
+
+        // add the 8 neighbour bits per cell: ones/twos/... are bit planes of the count
+        var t1 = uL ^ u;  var s1 = t1 ^ uR;  var c1 = (uL & u) | (uR & t1);    // top row (full adder)
+        var t2 = dL ^ d;  var s2 = t2 ^ dR;  var c2 = (dL & d) | (dR & t2);    // bottom row (full adder)
+        var s3 = mL ^ mR; var c3 = mL & mR;                                    // middle row (half adder)
+        var t4 = s1 ^ s2;
+        var ones = t4 ^ s3;                         // weight 1
+        var co = (s1 & s2) | (s3 & t4);             // carry of the weight-1 column, weight 2
+        var x1 = c1 ^ c2, y1 = c1 & c2;             // now add the four weight-2 bits c1, c2, c3, co
+        var x2 = c3 ^ co, y2 = c3 & co;
+        var twos = x1 ^ x2;
+        var p = x1 & x2;
+
+        if (life) {
+          // alive next if the count is 3, or the cell is alive and the count is 2:
+          // bit1 set, nothing at weight 4 or above, and (bit0 set or already alive)
+          nxt[midO + j] = twos & ~(y1 | y2 | p) & (ones | m);
+        } else {
+          var b2 = y1 ^ y2 ^ p;                     // weight 4
+          var b3 = y1 & y2;                         // weight 8 (count of exactly 8)
+          var out = 0;
+          for (var a = 0; a < bn.length; a++) {
+            var q = bn[a];
+            out |= ~m & ((q & 1 ? ones : ~ones) & (q & 2 ? twos : ~twos) & (q & 4 ? b2 : ~b2) & (q & 8 ? b3 : ~b3));
+          }
+          for (var b = 0; b < sn.length; b++) {
+            var r = sn[b];
+            out |= m & ((r & 1 ? ones : ~ones) & (r & 2 ? twos : ~twos) & (r & 4 ? b2 : ~b2) & (r & 8 ? b3 : ~b3));
+          }
+          nxt[midO + j] = out;
+        }
+      }
+    }
+  }
+
+  /** Number of set bits in a 32-bit integer. */
+  function popcount32(v) {
+    v = v - ((v >>> 1) & 0x55555555);
+    v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
+    return Math.imul((v + (v >>> 4)) & 0x0F0F0F0F, 0x01010101) >>> 24;
+  }
+
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { parseRLE: parseRLE, parseRule: parseRule };
+    module.exports = { parseRLE: parseRLE, parseRule: parseRule, stepPacked: stepPacked, popcount32: popcount32 };
   }
   if (typeof document === 'undefined') return;
 
@@ -114,44 +194,37 @@
   var LIFE = parseRule('B3/S23');
   var birth = LIFE.birth;
   var survive = LIFE.survive;
-  var cur = new Uint8Array(COLS * ROWS);
-  var nxt = new Uint8Array(COLS * ROWS);
-
-  /** Replace the world with an empty cols x rows grid. */
-  function setWorld(cols, rows) {
-    COLS = cols;
-    ROWS = rows;
-    cur = new Uint8Array(COLS * ROWS);
-    nxt = new Uint8Array(COLS * ROWS);
-  }
+  var W = COLS >> 5;                 // 32-bit words per row; COLS is always a multiple of 32
+  var cur = new Int32Array(W * ROWS);
+  var nxt = new Int32Array(W * ROWS);
   var generation = 0;
-  var population = 0;
+
+  /** Replace the world with an empty grid (columns rounded up to a multiple of 32). */
+  function setWorld(cols, rows) {
+    COLS = Math.ceil(cols / 32) * 32;
+    ROWS = rows;
+    W = COLS >> 5;
+    cur = new Int32Array(W * ROWS);
+    nxt = new Int32Array(W * ROWS);
+  }
+
+  function getCell(x, y) { return (cur[y * W + (x >> 5)] >>> (x & 31)) & 1; }
+
+  function setCell(x, y, v) {
+    var i = y * W + (x >> 5);
+    if (v) cur[i] |= 1 << (x & 31);
+    else cur[i] &= ~(1 << (x & 31));
+  }
 
   function countPopulation() {
     var p = 0;
-    for (var i = 0; i < cur.length; i++) p += cur[i];
-    population = p;
+    for (var i = 0; i < cur.length; i++) if (cur[i]) p += popcount32(cur[i]);
+    return p;
   }
 
   function step() {
-    var p = 0;
-    for (var y = 0; y < ROWS; y++) {
-      var up = (y === 0 ? ROWS - 1 : y - 1) * COLS;
-      var mid = y * COLS;
-      var dn = (y === ROWS - 1 ? 0 : y + 1) * COLS;
-      for (var x = 0; x < COLS; x++) {
-        var l = x === 0 ? COLS - 1 : x - 1;
-        var r = x === COLS - 1 ? 0 : x + 1;
-        var n = cur[up + l] + cur[up + x] + cur[up + r] +
-                cur[mid + l] + cur[mid + r] +
-                cur[dn + l] + cur[dn + x] + cur[dn + r];
-        var alive = cur[mid + x] ? survive[n] : birth[n];
-        nxt[mid + x] = alive;
-        p += alive;
-      }
-    }
+    stepPacked(cur, nxt, W, ROWS, { birth: birth, survive: survive });
     var t = cur; cur = nxt; nxt = t;
-    population = p;
     generation++;
   }
 
@@ -219,10 +292,17 @@
     var x0 = Math.max(0, Math.floor(ox)), x1 = Math.min(COLS, Math.ceil(ox + viewCols));
     var y0 = Math.max(0, Math.floor(oy)), y1 = Math.min(ROWS, Math.ceil(oy + viewRows()));
     for (var y = y0; y < y1; y++) {
-      var row = y * COLS;
+      var row = y * W;
       var py = Math.floor((y - oy) * s);
-      for (var x = x0; x < x1; x++) {
-        if (cur[row + x]) ctx.fillRect(Math.floor((x - ox) * s), py, size, size);
+      for (var j = x0 >> 5; j <= (x1 - 1) >> 5; j++) {
+        var word = cur[row + j];
+        if (!word) continue;                            // 32 empty cells skipped at once
+        var bx = j << 5;
+        var lo = Math.max(x0, bx) - bx;
+        var hi = Math.min(x1, bx + 32) - bx;
+        for (var i = lo; i < hi; i++) {
+          if ((word >>> i) & 1) ctx.fillRect(Math.floor((bx + i - ox) * s), py, size, size);
+        }
       }
     }
     renderStatus();
@@ -252,6 +332,7 @@
     var parts = [];
     if (patternName) parts.push(patternName);
     parts.push('generation ' + generation);
+    var population = countPopulation();
     parts.push(population + (population === 1 ? ' cell' : ' cells'));
     var text = parts.join(' · ');
     if (patternNote) text += ' · ' + patternNote;
@@ -264,7 +345,6 @@
     cur.fill(0);
     nxt.fill(0);
     generation = 0;
-    population = 0;
   }
 
   /** Put a parsed pattern in the middle of an empty grid, growing the world if it doesn't fit.
@@ -282,6 +362,7 @@
       wantCols = Math.max(DEFAULT_COLS, Math.floor(wantCols * k));
       wantRows = Math.max(DEFAULT_ROWS, Math.floor(wantRows * k));
     }
+    wantCols = Math.ceil(wantCols / 32) * 32;
     var grew = wantCols > DEFAULT_COLS || wantRows > DEFAULT_ROWS;
     if (wantCols !== COLS || wantRows !== ROWS) setWorld(wantCols, wantRows);
     clearGrid();                                   // empty cells, generation 0
@@ -293,9 +374,8 @@
       var gx = p.cells[i] + ox;
       var gy = p.cells[i + 1] + oy;
       if (gx >= COLS || gy >= ROWS) { cropped = true; continue; }
-      cur[gy * COLS + gx] = 1;
+      setCell(gx, gy, 1);
     }
-    countPopulation();
 
     // Frame the pattern: the default view, or zoomed out just enough to show all of it.
     cx = ox + p.width / 2;
@@ -445,13 +525,6 @@
     return { x: Math.min(COLS - 1, Math.max(0, x)), y: Math.min(ROWS - 1, Math.max(0, y)) };
   }
 
-  function setCell(x, y, v) {
-    var i = y * COLS + x;
-    if (cur[i] === v) return;
-    cur[i] = v;
-    population += v ? 1 : -1;
-  }
-
   /** Set every cell on the line from a to b (Bresenham). */
   function paintLine(a, b, v) {
     var dx = Math.abs(b.x - a.x);
@@ -485,7 +558,7 @@
     }
     var c = cellAt(ev);
     painting = true;
-    paintValue = cur[c.y * COLS + c.x] ? 0 : 1;   // first cell decides draw vs erase
+    paintValue = getCell(c.x, c.y) ? 0 : 1;   // first cell decides draw vs erase
     lastCell = c;
     try { canvas.setPointerCapture(ev.pointerId); } catch (e) { /* not fatal */ }
     paintLine(c, c, paintValue);
