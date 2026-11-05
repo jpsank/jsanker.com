@@ -4,6 +4,17 @@ declare(strict_types=1);
 require_once __DIR__ . '/bootstrap.php';
 
 /**
+ * "/path/file.css" -> "/path/file.css?v=<mtime>" for files in public/, so browsers (and the 1-hour static
+ * cache) pick up a changed file immediately instead of running stale JS against new HTML.
+ */
+function asset(string $path): string
+{
+    $file = __DIR__ . '/../public' . parse_url($path, PHP_URL_PATH);
+    $mtime = @filemtime($file);
+    return $mtime ? $path . (str_contains($path, '?') ? '&' : '?') . 'v=' . $mtime : $path;
+}
+
+/**
  * Site chrome. Every page is   page_start([...]);  ...content...  page_end();
  *
  * Options:
@@ -40,13 +51,13 @@ function page_start(array $o = []): void
     if ($legacy) {
         // The original puffyboa.xyz look: its shared.css + the project's own stylesheet.
         echo "<link rel=\"shortcut icon\" href=\"/assets/legacy/favicon.png\">\n";
-        echo "<link rel=\"stylesheet\" type=\"text/css\" href=\"/assets/legacy/shared.css\">\n";
+        echo "<link rel=\"stylesheet\" type=\"text/css\" href=\"" . e(asset('/assets/legacy/shared.css')) . "\">\n";
     } else {
         echo "<link rel=\"icon\" href=\"/favicon.ico\">\n";
-        echo "<link rel=\"stylesheet\" href=\"/assets/site.css\">\n";
+        echo "<link rel=\"stylesheet\" href=\"" . e(asset('/assets/site.css')) . "\">\n";
     }
     foreach ($o['styles'] ?? [] as $css) {
-        echo '<link rel="stylesheet" type="text/css" href="' . e($css) . "\">\n";
+        echo '<link rel="stylesheet" type="text/css" href="' . e(asset($css)) . "\">\n";
     }
     echo '</head><body' . (!empty($o['bare']) && !$legacy ? ' class="bare"' : '') . ">\n";
 
@@ -94,7 +105,7 @@ function page_end(): void
     foreach ($GLOBALS['__page_scripts'] as $s) {
         $src = is_array($s) ? $s['src'] : $s;
         $mod = is_array($s) && !empty($s['module']) ? ' type="module"' : '';
-        echo '<script' . $mod . ' src="' . e($src) . '"></script>' . "\n";
+        echo '<script' . $mod . ' src="' . e(asset($src)) . '"></script>' . "\n";
     }
     echo "</body>\n</html>\n";
 }
