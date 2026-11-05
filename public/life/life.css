@@ -45,3 +45,5 @@
 }
 
 #life-canvas.moving { cursor: grab; }
+/* touch screens, 'scroll' mode: leave touch to the browser so a swipe over the grid scrolls the page */
+#life-canvas.scrolls { touch-action: auto; }

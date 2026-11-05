@@ -496,12 +496,21 @@
   zoomOutBtn.addEventListener('click', function () { zoomAt(1 / 1.5); });
   fitBtn.addEventListener('click', function () { viewCols = maxView(); cx = COLS / 2; cy = ROWS / 2; draw(); });
 
-  var moveMode = false;          // false: drag draws cells; true: drag pans the view
+  // What a one-finger/mouse drag does. Touch screens start in 'scroll' so a swipe over the grid still
+  // scrolls the page (a tap toggles a cell); 'draw' and 'move' take over the touch for drawing / panning.
+  var coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+  var MODES = coarse ? ['scroll', 'draw', 'move'] : ['draw', 'move'];
+  var mode = MODES[0];
+  function applyMode() {
+    modeBtn.textContent = 'drag: ' + mode;
+    canvas.classList.toggle('moving', mode === 'move');
+    canvas.classList.toggle('scrolls', mode === 'scroll');
+  }
   modeBtn.addEventListener('click', function () {
-    moveMode = !moveMode;
-    modeBtn.textContent = moveMode ? 'drag: move' : 'drag: draw';
-    canvas.classList.toggle('moving', moveMode);
+    mode = MODES[(MODES.indexOf(mode) + 1) % MODES.length];
+    applyMode();
   });
+  applyMode();
 
   // Ctrl/⌘ + wheel (and trackpad pinch, which arrives as ctrl+wheel) zooms; a plain wheel still scrolls the page.
   canvas.addEventListener('wheel', function (ev) {
@@ -545,31 +554,91 @@
 
   var panning = false;
   var panLast = null;
+  var pointers = {};             // pointers currently down, by id
+  var pinch = null;              // set while two fingers are down: their last distance and midpoint
+  var tap = null;                // a touch in 'scroll' mode that may turn out to be a tap
+  var pending = null;            // a touch in 'draw' mode that hasn't moved yet
+
+  function pointerCount() { return Object.keys(pointers).length; }
+
+  function pinchState() {
+    var ids = Object.keys(pointers);
+    var a = pointers[ids[0]];
+    var b = pointers[ids[1]];
+    return { dist: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+  }
 
   canvas.addEventListener('pointerdown', function (ev) {
-    var wantPan = moveMode || ev.shiftKey || ev.button === 1;
+    var wantPan = mode === 'move' || ev.shiftKey || ev.button === 1;
     if (!wantPan && ev.button !== undefined && ev.button !== 0) return;
+    if (ev.isPrimary) { pointers = {}; pinch = null; pending = null; }   // a first finger: forget any stale state
+    pointers[ev.pointerId] = { x: ev.clientX, y: ev.clientY };
+
+    if (ev.pointerType === 'touch' && mode === 'scroll') {
+      // Don't take over the touch: the browser may start scrolling the page (that fires pointercancel).
+      tap = { id: ev.pointerId, x: ev.clientX, y: ev.clientY };
+      return;
+    }
     ev.preventDefault();
+    try { canvas.setPointerCapture(ev.pointerId); } catch (e) { /* not fatal */ }
+
+    if (pointerCount() === 2) {            // second finger: switch from drawing/panning to pinch-zoom
+      pending = null;
+      painting = false;
+      panning = false;
+      lastCell = null;
+      pinch = pinchState();
+      return;
+    }
     if (wantPan) {
       panning = true;
       panLast = { x: ev.clientX, y: ev.clientY };
-      try { canvas.setPointerCapture(ev.pointerId); } catch (e) { /* not fatal */ }
       return;
     }
     var c = cellAt(ev);
+    if (ev.pointerType === 'touch') {
+      // Wait to see whether this finger is drawing or the first finger of a pinch: nothing is drawn until
+      // it moves (or lifts, which is a tap).
+      pending = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, c: c };
+      return;
+    }
+    startPainting(c);
+  });
+
+  function startPainting(c) {
     painting = true;
     paintValue = getCell(c.x, c.y) ? 0 : 1;   // first cell decides draw vs erase
     lastCell = c;
-    try { canvas.setPointerCapture(ev.pointerId); } catch (e) { /* not fatal */ }
     paintLine(c, c, paintValue);
     draw();
-  });
+  }
 
   canvas.addEventListener('pointermove', function (ev) {
+    var pt = pointers[ev.pointerId];
+    if (pt) { pt.x = ev.clientX; pt.y = ev.clientY; }
+    if (tap && tap.id === ev.pointerId) {
+      if (Math.hypot(ev.clientX - tap.x, ev.clientY - tap.y) > 8) tap = null;   // it's a swipe, not a tap
+      return;
+    }
+    if (pending && pending.id === ev.pointerId) {
+      if (Math.hypot(ev.clientX - pending.x, ev.clientY - pending.y) < 4) return;   // still a tap
+      var start = pending.c;
+      pending = null;
+      startPainting(start);                  // it's a drag: begin at the cell it started on
+    }
+    if (pinch && pointerCount() === 2) {
+      var now = pinchState();
+      var k = viewCols / (canvas.clientWidth || 1);          // world cells per CSS pixel
+      cx -= (now.mx - pinch.mx) * k;                          // two-finger pan...
+      cy -= (now.my - pinch.my) * k;
+      zoomAt(now.dist / pinch.dist, now.mx, now.my);          // ...and zoom about the midpoint
+      pinch = now;
+      return;
+    }
     if (panning) {
-      var k = viewCols / (canvas.clientWidth || 1);       // world cells per CSS pixel
-      cx -= (ev.clientX - panLast.x) * k;
-      cy -= (ev.clientY - panLast.y) * k;
+      var k2 = viewCols / (canvas.clientWidth || 1);
+      cx -= (ev.clientX - panLast.x) * k2;
+      cy -= (ev.clientY - panLast.y) * k2;
       panLast = { x: ev.clientX, y: ev.clientY };
       draw();
       return;
@@ -583,8 +652,31 @@
   });
 
   function stopPainting() { painting = false; panning = false; lastCell = null; }
-  canvas.addEventListener('pointerup', stopPainting);
-  canvas.addEventListener('pointercancel', stopPainting);
+
+  function endPointer(ev) {
+    delete pointers[ev.pointerId];
+    if (tap && tap.id === ev.pointerId) {
+      if (ev.type === 'pointerup') {         // a tap: toggle the cell
+        var c = cellAt(ev);
+        setCell(c.x, c.y, getCell(c.x, c.y) ? 0 : 1);
+        draw();
+      }
+      tap = null;
+      return;
+    }
+    if (pending && pending.id === ev.pointerId) {
+      if (ev.type === 'pointerup' && pointerCount() === 0) {   // a tap in draw mode: toggle that cell
+        var pc = pending.c;
+        setCell(pc.x, pc.y, getCell(pc.x, pc.y) ? 0 : 1);
+        draw();
+      }
+      pending = null;
+    }
+    if (pointerCount() < 2) pinch = null;
+    stopPainting();
+  }
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', endPointer);
 
   // ------------------------------------------------------------- init ---
 

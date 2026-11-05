@@ -47,7 +47,8 @@ or <a href="https://calendly.com/juliansanker">schedule a meeting</a>.</p>
 </div>
 <p class="muted small"><a href="https://en.wikipedia.org/wiki/Conway%27s_Game_of_Life">Conway's Game of Life</a>,
 seeded at random from about 1,260 patterns. Drag to draw cells; zoom out or press “fit all” to see the whole grid
-(Ctrl/⌘ + scroll or pinch also zooms; Shift-drag or “drag: move” pans).</p>
+(Ctrl/⌘ + scroll or pinch also zooms; Shift-drag or “drag: move” pans).
+On a touch screen, tap cells to toggle them and swipe to scroll the page; set “drag” to draw or move to use one finger on the grid, and pinch to zoom.</p>
 
 <h2>Colophon</h2>
 <p class="muted small">Plain HTML and PHP, one stylesheet, no tracking. The old projects are the original PHP,
