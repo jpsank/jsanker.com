@@ -4,6 +4,7 @@
 //
 // Keyboard shortcuts (not shown on the page, to keep the original look):
 //   Space  pause / resume      Left arrow  back 10 lines      Home  start over
+// Touch screens have no keyboard, so they get the same three actions as buttons along the bottom.
 
 function findGetParameter(parameterName) {
     let result = null;
@@ -101,23 +102,39 @@ window.onload = function() {
             lIdx = parseInt(param, 10);
         }
 
+        const pauseBtn = document.getElementById("sr-pause");
+        function togglePause() {
+            paused = !paused;
+            if (pauseBtn) pauseBtn.textContent = paused ? "resume" : "pause";
+            if (paused) {
+                if (timer !== null) clearTimeout(timer);
+                timer = null;
+            } else if (timer === null && lIdx < lines.length) {
+                update();
+            }
+        }
+        function back() { jumpTo(Math.min(lIdx, lines.length - 1) - 10); if (pauseBtn) pauseBtn.textContent = "pause"; }
+        function restart() { jumpTo(0); if (pauseBtn) pauseBtn.textContent = "pause"; }
+
         document.addEventListener("keydown", function (ev) {
             if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
             if (ev.key === " ") {
                 ev.preventDefault();
-                paused = !paused;
-                if (paused) {
-                    if (timer !== null) clearTimeout(timer);
-                    timer = null;
-                } else if (timer === null && lIdx < lines.length) {
-                    update();
-                }
+                togglePause();
             } else if (ev.key === "ArrowLeft") {
-                jumpTo(Math.min(lIdx, lines.length - 1) - 10);
+                back();
             } else if (ev.key === "Home") {
-                jumpTo(0);
+                restart();
             }
         });
+
+        const controls = document.getElementById("controls");
+        if (controls) {
+            controls.hidden = false;      // shown by the stylesheet on touch screens only
+            pauseBtn.addEventListener("click", togglePause);
+            document.getElementById("sr-back").addEventListener("click", back);
+            document.getElementById("sr-restart").addEventListener("click", restart);
+        }
 
         update();
     }

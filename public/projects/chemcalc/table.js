@@ -20,6 +20,33 @@ function span(text, className) {
     return s;
 }
 
+// Touch screens: cells are far smaller than a fingertip, so a tap selects an element and shows it in a
+// panel with a big "Open" button instead of jumping straight to its page (a mis-tap is then harmless).
+const touch = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+const picked = document.getElementById("picked");
+let pickedCell = null;
+
+function pick(td, el, a, trendValue) {
+    if (pickedCell) pickedCell.classList.remove("picked");
+    pickedCell = td;
+    td.classList.add("picked");
+    picked.replaceChildren();
+    const title = document.createElement("strong");
+    title.textContent = el.symbol + " - " + el.name;
+    const detail = document.createElement("span");
+    const bits = ["atomic number " + el.number, Math.round(el.atomic_mass * 1000) / 1000 + " u", categoryOf(el).split("_").join(" ")];
+    if (trendValue !== null && trendValue !== undefined) {       // a trend is selected: show its value too
+        bits.push(select.selectedOptions[0].textContent + ": " + trendValue);
+    }
+    detail.textContent = bits.join(" \u00b7 ");
+    const open = document.createElement("a");
+    open.className = "open";
+    open.href = a.href;
+    open.textContent = "Open " + el.symbol + " \u2192";
+    picked.append(title, detail, open);
+    picked.hidden = false;
+}
+
 function cell(el, bottomText, trendValue, maxTrend) {
     const td = document.createElement("td");
     if (!el) return td;
@@ -31,6 +58,12 @@ function cell(el, bottomText, trendValue, maxTrend) {
     a.append(span(el.number), document.createTextNode(el.symbol));
     if (bottomText !== null) a.append(span(bottomText, trendValue != null ? "trend" : ""));
     td.append(a);
+    if (touch && picked) {
+        a.addEventListener("click", (ev) => {
+            ev.preventDefault();
+            pick(td, el, a, trendValue);
+        });
+    }
 
     if (trendValue != null) {
         const r = 255 * trendValue / maxTrend;
@@ -49,6 +82,8 @@ function categoryOf(el) {
 }
 
 function render(trendKey) {
+    pickedCell = null;
+    if (picked) { picked.hidden = true; picked.replaceChildren(); }
     table.replaceChildren();
     legend.replaceChildren();
 

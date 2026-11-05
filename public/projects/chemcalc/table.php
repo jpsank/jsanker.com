@@ -29,6 +29,8 @@ page_start([
         </select>
     </div>
 
+    <div id="picked" hidden></div>
+
     <div id="legend">
 
     </div>

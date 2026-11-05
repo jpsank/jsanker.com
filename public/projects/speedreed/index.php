@@ -95,6 +95,11 @@ page_start([
         </div>
         <p class="note">Only public-domain books (from Project Gutenberg) are on the shelf here; the other books from the original library are left out for copyright reasons.</p>
 <?php elseif ($bookText !== null): ?>
+        <div id='controls' hidden>
+            <button type='button' id='sr-back'>&larr; back</button>
+            <button type='button' id='sr-pause'>pause</button>
+            <button type='button' id='sr-restart'>start over</button>
+        </div>
         <div id='text'>
 <?php
     $lines = explode("\n", e($bookText));

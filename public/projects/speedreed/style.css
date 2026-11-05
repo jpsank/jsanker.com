@@ -87,3 +87,33 @@ p.word {
     font-size: .7em;
     color: #555;
 }
+
+/* jsanker.com: touch screens have no keyboard, so pause / back / start over are buttons there
+   (everyone else keeps the original look and uses Space, Left arrow and Home). */
+#controls {
+    display: none;
+}
+@media (pointer: coarse) {
+    #controls:not([hidden]) {
+        display: flex;
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        gap: 10px;
+        justify-content: center;
+        padding: 10px;
+        background-color: rgba(255, 255, 250, .95);
+        border-top: 1px solid #ccc;
+    }
+    #controls button {
+        flex: 1;
+        max-width: 140px;
+        min-height: 44px;
+        font-family: serif;
+        font-size: .7em;
+        background: #fffffa;
+        border: 1px solid #555;
+        border-radius: 4px;
+    }
+}
