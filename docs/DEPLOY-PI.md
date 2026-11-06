@@ -177,6 +177,30 @@ docker compose -f compose.prod.yaml pull tunnel && docker compose -f compose.pro
 Data lives in the volumes, so rebuilding doesn't touch it. Run a **single instance** (SQLite is a local file).
 The Pi OS itself updates security fixes automatically (`unattended-upgrades`); reboot now and then.
 
+### Automatic deploys (GitHub webhook)
+
+A push to `main` redeploys the site within about a minute (the time the build takes). GitHub POSTs to
+`https://deploy.jsanker.com/hook`; the Cloudflare Tunnel forwards it to `scripts/deploy-listener.py`, a
+standard-library Python service (~10 MB) that checks the HMAC signature and then runs `scripts/deploy.sh`
+(`git merge --ff-only origin/main`, rebuild `web`). Only signed `push` events for `refs/heads/main` of
+`jpsank/jsanker.com` do anything; pushes during a build collapse into one follow-up build. A failed build leaves
+the old container serving.
+
+One-time setup:
+
+1. On the Pi: `cd ~/jsanker.com && git pull && docker compose -f compose.prod.yaml up -d tunnel`
+   (the tunnel service gained `host.docker.internal`), then `sudo scripts/install-deploy-hook.sh`.
+   It installs the `jsanker-deploy` systemd service and prints the webhook secret.
+2. Cloudflare Zero Trust -> Networks -> Tunnels -> `jsanker-pi` -> Public hostname -> add `deploy.jsanker.com`,
+   service `HTTP`, URL `host.docker.internal:9000`. (This creates its own DNS record; leave the wildcard alone.)
+3. GitHub -> repo Settings -> Webhooks -> Add: Payload URL `https://deploy.jsanker.com/hook`, content type
+   `application/json`, the secret from step 1, event "Just the push event".
+
+Check it: the webhook's "Recent Deliveries" tab shows `200 pong` for the ping, and
+`journalctl -u jsanker-deploy -f` shows each deploy. Deploy by hand any time with `scripts/deploy.sh`
+(`FORCE=1` to rebuild when nothing changed). The listener only exposes `/hook`, so the public URL can do nothing
+without the secret; to rotate it, delete `~/.deploy-secret`, rerun the install script and update GitHub.
+
 ## Things to know
 
 - **Visitor IPs:** behind the tunnel every request arrives from the `cloudflared` container. The app reads

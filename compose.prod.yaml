@@ -33,6 +33,8 @@ services:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
     command: tunnel --no-autoupdate run
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # lets a tunnel route reach the deploy listener (docs/DEPLOY-PI.md)
     env_file:
       - tunnel.env                 # contains only TUNNEL_TOKEN=... (kept out of the web container)
     depends_on:
