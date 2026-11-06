@@ -203,11 +203,33 @@
     this.onEnded = null;
   }
 
+  // iOS mutes Web Audio while the ringer switch is on silent, unless the page counts as "playback" media.
+  // navigator.audioSession does that on iOS 16.4+; older versions need a (silent) <audio> element playing.
+  // Must run inside a user gesture.
+  var unlocked = false;
+  function unlockMobileAudio() {
+    if (unlocked) { return; }
+    unlocked = true;
+    try { if (navigator.audioSession) { navigator.audioSession.type = 'playback'; } } catch (e) { /* unsupported */ }
+    try {
+      var n = 441, bytes = new Uint8Array(44 + n * 2), dv = new DataView(bytes.buffer);
+      var str = function (o, t) { for (var i = 0; i < t.length; i++) { bytes[o + i] = t.charCodeAt(i); } };
+      str(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt ');
+      dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+      dv.setUint32(24, 44100, true); dv.setUint32(28, 88200, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+      str(36, 'data'); dv.setUint32(40, n * 2, true);
+      var el = new Audio(URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' })));
+      el.loop = true;
+      el.play().catch(function () { /* autoplay refused; Web Audio still works with the ringer on */ });
+    } catch (e) { /* ignore */ }
+  }
+
   Engine.supported = !!(window.AudioContext || window.webkitAudioContext);
 
   Engine.prototype.ensure = function () {
     if (this.ctx) { return this.ctx; }
     var AC = window.AudioContext || window.webkitAudioContext;
+    unlockMobileAudio();
     var ctx = new AC();
     var comp = ctx.createDynamicsCompressor();
     var master = ctx.createGain();
