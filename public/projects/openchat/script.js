@@ -27,37 +27,30 @@
         return typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
     }
 
+    // "5 minutes", "3 hours", "12 days", or for long gaps the two largest units: "3 years 6 days".
+    function plural(n, unit) {
+        return `${n} ${unit}${n === 1 ? '' : 's'}`;
+    }
+
     function getTimePassed(time) {
-        let time_passed = Math.max(0, (Date.now() - Date.parse(time)) / 1000);
-        let units = 'seconds';
-        if (time_passed > 60) {
-            time_passed /= 60;
-            units = 'minutes';
+        const seconds = Math.max(0, (Date.now() - Date.parse(time)) / 1000);
+        if (seconds <= 60) return plural(Math.round(seconds), 'second');
+        const minutes = seconds / 60;
+        if (minutes <= 60) return plural(Math.round(minutes), 'minute');
+        const hours = minutes / 60;
+        if (hours <= 24) return plural(Math.round(hours), 'hour');
 
-            if (time_passed > 60) {
-                time_passed /= 60;
-                units = 'hours';
-
-                if (time_passed > 24) {
-                    time_passed /= 24;
-                    units = 'days';
-                }
-            }
-        }
-        time_passed = Math.round(time_passed);
-
-        // if it's 1 hour, 1 minute, etc, take off the S
-        if (time_passed === 1) {
-            units = units.slice(0, -1);
-        }
-        return [time_passed, units];
+        const totalDays = Math.round(hours / 24);
+        const years = Math.floor(totalDays / 365);
+        const days = totalDays - years * 365;
+        if (years === 0) return plural(totalDays, 'day');
+        return days === 0 ? plural(years, 'year') : `${plural(years, 'year')} ${plural(days, 'day')}`;
     }
 
     function updateTimePassed(messageElem) {
         const post_date = messageElem.getAttribute('data-post-date');
         if (Number.isNaN(Date.parse(post_date))) return false;
-        const [time_passed, units] = getTimePassed(post_date);
-        const newText = `${time_passed} ${units} ago`;
+        const newText = `${getTimePassed(post_date)} ago`;
 
         const time = messageElem.getElementsByClassName('t')[0];
         if (time && time.textContent !== newText) {
