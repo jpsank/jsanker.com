@@ -27,10 +27,11 @@ Do this before anything else, with the old card in your Mac (USB reader). Don't 
 brew install ddrescue
 diskutil list                                   # find the card, e.g. /dev/disk4 (check the SIZE!)
 diskutil unmountDisk /dev/disk4
-sudo ddrescue -d -r3 /dev/rdisk4 ~/pi-old-sd.img ~/pi-old-sd.map
+sudo ddrescue -r3 /dev/rdisk4 ~/pi-old-sd.img ~/pi-old-sd.map
 ```
 
-(To run it inside Claude Code, type the lines starting with `! `.) `ddrescue` copies every readable sector and
+Run these in a normal Terminal window: `sudo` needs a real terminal to ask for your password, so it won't work
+inside Claude Code. (macOS has no direct disc access, so don't add `-d`.) `ddrescue` copies every readable sector and
 retries bad ones; re-run the same command to retry what failed. After it finishes, put the card away and **work
 only on the image**. The image is the original; keep a copy of it.
 
@@ -46,6 +47,12 @@ If the card is too damaged to read at all, the databases are gone and the site s
    (gear / "Edit settings") set a hostname, create a user with a strong password, enable SSH, and add your Wi-Fi if
    you aren't using Ethernet (Ethernet is more reliable). Boot from the SSD: on a Pi 4/5 it works out of the box
    with recent firmware; on a Pi 3 it needs USB boot enabled.
+
+   **If the Pi never joins the network** (red LED solid, green barely flickering) and the SSD is in a USB-to-SATA
+   cable, the cable's chip may hang in UAS mode. Plug the SSD back into your computer, open `cmdline.txt` on the
+   `bootfs` volume and add `usb-storage.quirks=VVVV:PPPP:u` (the cable's USB vendor and product IDs) before
+   `rootwait`, keeping it all on one line. For the Sabrent EC-SSHD (JMicron JMS578) that is
+   `usb-storage.quirks=152d:a578:u`. Find the IDs with `system_profiler SPUSBHostDataType` on a Mac or `lsusb` on Linux.
 2. SSH in and install Docker (Docker's official convenience script; it supports Raspberry Pi OS):
 
 ```sh

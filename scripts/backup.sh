@@ -2,7 +2,7 @@
 # Back up the production data (databases + OpenChat uploads) to a dated folder on the server,
 # keep the last N days, and optionally copy it off the server. Run from cron on the server:
 #
-#   17 3 * * *  /home/ubuntu/jsanker.com/scripts/backup.sh >> /home/ubuntu/jsanker-backup.log 2>&1
+#   17 3 * * *  /home/jsanker/jsanker.com/scripts/backup.sh >> /home/jsanker/jsanker-backup.log 2>&1
 #
 # Environment (all optional):
 #   BACKUP_DIR        where backups go on the server           (default /srv/jsanker-backups)
