@@ -1,0 +1,39 @@
+{% extends "layout.html" %}
+{% from "_macros.html" import avatar, when, vote_buttons, comment_tree, pager with context %}
+{% block app_content %}
+<a class="nounderline" href="{{ url_for('main.show_user', username=post.author.username) }}">{{ avatar(post.author.username, 25) }}</a>
+<a href="{{ url_for('main.show_user', username=post.author.username) }}">{{ post.author.username }}</a>
+in <a href="{{ url_for('main.show_chat', name=post.chat.name) }}">chat/{{ post.chat.name }}</a>
+posted {{ when(post.created_at) }}:
+<br><br>
+<table><tr>
+    <td class="score-small">{{ post.score }}</td>
+    <td>{{ vote_buttons('post', post, votes) }}</td>
+</tr></table>
+<h2>{{ post.title }}</h2>
+{% if post.image %}<img class="attachment-big" alt="" src="{{ url_for('main.upload', name=post.image) }}"><br><br>{% endif %}
+<p class="pre">{{ post.body }}</p>
+{% if current_user.is_authenticated and current_user.id == post.author_id %}
+<form class="inline-form" method="post" action="{{ url_for('main.delete_post', post_id=post.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn btn-link nav-button" data-confirm="Delete this post and its comments?">Delete post</button>
+</form>
+{% endif %}
+<br>
+{% if current_user.is_authenticated %}
+<form method="post" action="{{ url_for('main.add_comment', post_id=post.id) }}" class="comment-form">
+    {{ comment_form.hidden_tag() }}
+    <input type="hidden" name="next" value="{{ app_root }}{{ request.full_path.rstrip('?') }}">
+    <div class="form-group">
+        {{ comment_form.body.label(class='control-label') }}
+        {{ comment_form.body(class='form-control', rows=4) }}
+    </div>
+    <button type="submit" class="btn btn-default">Comment</button>
+</form>
+{% else %}
+<p><a href="{{ url_for('auth.login') }}">Sign in</a> to comment.</p>
+{% endif %}
+<br>
+{{ comment_tree(comments, votes, selected, 1, max_depth, post) }}
+{{ pager(page) }}
+{% endblock %}

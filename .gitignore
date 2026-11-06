@@ -3,3 +3,8 @@
 /var/
 .netlify
 tunnel.env
+
+# Python
+__pycache__/
+*.pyc
+openchat-app/var/

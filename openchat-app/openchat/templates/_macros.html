@@ -1,0 +1,117 @@
+{# Shared template macros. Every state-changing control is a small POST form carrying the CSRF token. #}
+
+{% macro field(f) %}
+<div class="form-group{% if f.errors %} has-error{% endif %}">
+    {{ f.label(class='control-label') }}
+    {% if f.type == 'FileField' %}{{ f(class='form-control-file') }}{% else %}{{ f(class='form-control') }}{% endif %}
+    {% for error in f.errors %}<span class="help-block">{{ error }}</span>{% endfor %}
+</div>
+{% endmacro %}
+
+{% macro render_form(f, submit='Submit', multipart=false) %}
+<form method="post" action="" novalidate{% if multipart %} enctype="multipart/form-data"{% endif %}>
+    {{ f.hidden_tag() }}
+    {% for fld in f if fld.type not in ('CSRFTokenField', 'HiddenField', 'SubmitField') %}{{ field(fld) }}{% endfor %}
+    <button type="submit" class="btn btn-default">{{ submit }}</button>
+</form>
+{% endmacro %}
+
+{% macro search(q, placeholder='search') %}
+<form class="form-inline search-form" method="get" action="">
+    <input class="form-control" type="search" name="q" value="{{ q or '' }}" maxlength="100" placeholder="{{ placeholder }}">
+    <button type="submit" class="btn btn-default">Search</button>
+</form>
+{% endmacro %}
+
+{% macro avatar(name, size) %}
+<img class="avatar" alt="" width="{{ size }}" height="{{ size }}" src="{{ url_for('main.avatar', name=name) }}">
+{% endmacro %}
+
+{% macro when(dt) %}<time datetime="{{ dt|iso }}" title="{{ dt|iso }}">{{ dt|ago }}</time>{% endmacro %}
+
+{% macro vote_buttons(kind, item, votes) %}
+{% if current_user.is_authenticated %}
+{% set liked = votes.get((kind, item.id)) %}
+<form class="inline-form" method="post" action="{{ url_for('main.vote', kind=kind, item_id=item.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="next" value="{{ app_root }}{{ request.full_path.rstrip('?') }}">
+    <button type="submit" class="vote-button upvote{% if liked is true %} selected{% endif %}" name="dir"
+            value="{{ 'clear' if liked is true else 'up' }}" title="Upvote"><i class="glyphicon glyphicon-arrow-up"></i></button>
+    <button type="submit" class="vote-button downvote{% if liked is false %} selected{% endif %}" name="dir"
+            value="{{ 'clear' if liked is false else 'down' }}" title="Downvote"><i class="glyphicon glyphicon-arrow-down"></i></button>
+</form>
+{% endif %}
+{% endmacro %}
+
+{% macro subscribe_button(chat, subs) %}
+{% if current_user.is_authenticated %}
+{% set joined = chat.id in subs %}
+<form class="inline-form" method="post" action="{{ url_for('main.subscribe', name=chat.name) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="next" value="{{ app_root }}{{ request.full_path.rstrip('?') }}">
+    <button type="submit" class="{{ 'unlike-button' if joined else 'like-button' }}" name="action"
+            value="{{ 'unsub' if joined else 'sub' }}">{{ 'Subscribed' if joined else 'Subscribe' }}</button>
+</form>
+{% endif %}
+{% endmacro %}
+
+{% macro pager(page) %}
+{% if page.has_prev or page.has_next %}
+<nav aria-label="Pages">
+    <ul class="pager">
+        <li class="previous{% if not page.has_prev %} disabled{% endif %}"><a href="{{ page_url(page.prev_num) if page.has_prev else '#' }}"><span aria-hidden="true">&larr;</span> Newer</a></li>
+        <li class="next{% if not page.has_next %} disabled{% endif %}"><a href="{{ page_url(page.next_num) if page.has_next else '#' }}">Older <span aria-hidden="true">&rarr;</span></a></li>
+    </ul>
+</nav>
+{% endif %}
+{% endmacro %}
+
+{% macro post_row(post, votes, show_chat=true) %}
+<table class="table table-hover">
+    <tr>
+        <td class="score">{{ post.score }}</td>
+        <td class="narrow">{{ vote_buttons('post', post, votes) }}</td>
+        <td class="narrow"><a href="{{ url_for('main.show_user', username=post.author.username) }}">{{ avatar(post.author.username, 50) }}</a></td>
+        <td class="wide">
+            <a href="{{ url_for('main.show_user', username=post.author.username) }}">{{ post.author.username }}</a>
+            {% if show_chat %}in <a href="{{ url_for('main.show_chat', name=post.chat.name) }}">chat/{{ post.chat.name }}</a>{% endif %}
+            posted {{ when(post.created_at) }}:
+            <h4><a class="custom-link" href="{{ url_for('main.show_post', post_id=post.id) }}">{{ post.title }}</a></h4>
+            {% if post.image %}<a href="{{ url_for('main.show_post', post_id=post.id) }}"><img class="attachment-small" alt="" src="{{ url_for('main.upload', name=post.image) }}"></a><br><br>{% endif %}
+            <p class="pre">{{ post.body|truncate(150) }}</p>
+        </td>
+    </tr>
+</table>
+{% endmacro %}
+
+{% macro comment_tree(comments, votes, selected, depth, max_depth, post) %}
+{% for comment in comments %}
+<table id="c{{ comment.id }}" class="table table-hover table-condensed comment-table">
+    <tr class="comment{% if selected == comment.id %} selected{% endif %}">
+        <td class="score">{{ comment.score }}</td>
+        <td class="narrow">{{ vote_buttons('comment', comment, votes) }}</td>
+        <td class="narrow"><a href="{{ url_for('main.show_user', username=comment.author.username) }}">{{ avatar(comment.author.username, 40) }}</a></td>
+        <td class="wide">
+            <a href="{{ url_for('main.show_user', username=comment.author.username) }}">{{ comment.author.username }}</a>
+            commented {{ when(comment.created_at) }}:
+            <p class="pre">{{ comment.body }}</p>
+            {% if current_user.is_authenticated %}
+            <details class="reply">
+                <summary>Reply</summary>
+                <form method="post" action="{{ url_for('main.add_comment', post_id=post.id) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="parent_id" value="{{ comment.id }}">
+                    <input type="hidden" name="next" value="{{ app_root }}{{ request.full_path.rstrip('?') }}">
+                    <textarea class="form-control" name="body" rows="3" maxlength="4000" required></textarea>
+                    <button type="submit" class="btn btn-default btn-sm">Reply</button>
+                </form>
+            </details>
+            {% endif %}
+        </td>
+    </tr>
+    {% if comment.replies %}
+    <tr><td colspan="4" class="replies">{{ comment_tree(comment.replies, votes, selected, depth + 1, max_depth, post) }}</td></tr>
+    {% endif %}
+</table>
+{% endfor %}
+{% endmacro %}

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% if title %}{{ title }} - OpenChat{% else %}OpenChat{% endif %}</title>
+    <link rel="shortcut icon" href="/assets/legacy/favicon.png">
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap/css/bootstrap.min.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<nav class="navbar navbar-default">
+    <div class="container">
+        <div class="navbar-header">
+            <button type="button" class="navbar-toggle collapsed" id="nav-toggle" aria-expanded="false" aria-controls="nav-menu">
+                <span class="sr-only">Toggle navigation</span>
+                <span class="icon-bar"></span><span class="icon-bar"></span><span class="icon-bar"></span>
+            </button>
+            <a class="navbar-brand" href="{{ url_for('main.index') }}">OpenChat</a>
+        </div>
+        <div class="collapse navbar-collapse" id="nav-menu">
+            <ul class="nav navbar-nav">
+                {% if current_user.is_authenticated %}<li><a href="{{ url_for('main.feed') }}">Feed</a></li>{% endif %}
+                <li><a href="{{ url_for('main.popular') }}">Popular</a></li>
+                <li><a href="{{ url_for('main.explore_chats') }}">Chats</a></li>
+                <li><a href="{{ url_for('main.leaderboard') }}">Leaderboard</a></li>
+            </ul>
+            <ul class="nav navbar-nav navbar-right">
+                {% if current_user.is_authenticated %}
+                <li><a href="{{ url_for('main.show_user', username=current_user.username) }}">{{ current_user.username }}</a></li>
+                <li>
+                    <form class="navbar-form" method="post" action="{{ url_for('auth.logout') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-link nav-button" type="submit">Logout</button>
+                    </form>
+                </li>
+                {% else %}
+                <li><a href="{{ url_for('auth.login') }}">Login</a></li>
+                <li><a href="{{ url_for('auth.register') }}">Register</a></li>
+                {% endif %}
+                <li><a href="/projects/">&larr; jsanker.com</a></li>
+            </ul>
+        </div>
+    </div>
+</nav>
+
+<div class="container">
+    {% for message in get_flashed_messages() %}
+    <div class="alert alert-info" role="alert">{{ message }}</div>
+    {% endfor %}
+    {% block app_content %}{% endblock %}
+</div>
+<script src="{{ url_for('static', filename='js/nav.js') }}"></script>
+</body>
+</html>

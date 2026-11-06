@@ -1,0 +1,18 @@
+{% extends "layout.html" %}
+{% from "_macros.html" import post_row, pager with context %}
+{% block app_content %}
+<div class="homepage">
+    <div class="logo"><img alt="OpenChat" src="{{ url_for('static', filename='img/openchat.png') }}"></div>
+    <h1>OpenChat</h1>
+    <p>A Reddit-like place to start chats, post, comment and vote. The successor to
+       <a href="/projects/openchat/">OpenChat Classic</a>.</p>
+    {% if not current_user.is_authenticated %}
+    <p><a class="btn btn-primary" href="{{ url_for('auth.register') }}">Register</a>
+       <a class="btn btn-default" href="{{ url_for('auth.login') }}">Sign in</a></p>
+    {% endif %}
+</div>
+<h3>Top posts</h3>
+{% for post in posts %}{{ post_row(post, votes) }}{% else %}
+<p>Nothing here yet. <a href="{{ url_for('main.explore_chats') }}">Find or start a chat.</a></p>
+{% endfor %}
+{% endblock %}

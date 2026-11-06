@@ -1,0 +1,6 @@
+{% extends "layout.html" %}
+{% from "_macros.html" import render_form with context %}
+{% block app_content %}
+<h1>New post in chat/{{ chat.name }}</h1>
+{{ render_form(form, 'Post', true) }}
+{% endblock %}

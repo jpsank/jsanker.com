@@ -1,0 +1,19 @@
+{% extends "layout.html" %}
+{% from "_macros.html" import post_row, pager, avatar, when with context %}
+{% block app_content %}
+<table class="table">
+    <tr>
+        <td class="narrow-wide">{{ avatar(user.username, 128) }}</td>
+        <td>
+            <h1>u/{{ user.username }}</h1>
+            {% if user.about_me %}<p class="pre">{{ user.about_me }}</p>{% endif %}
+            <p>User score: {{ user.score }}</p>
+            <p>Last seen {{ when(user.last_seen) }}</p>
+            {% if current_user.is_authenticated and current_user.id == user.id %}<p><a href="{{ url_for('main.edit_profile') }}">Edit your profile</a></p>{% endif %}
+        </td>
+    </tr>
+</table>
+<h2>Posts</h2>
+{% for post in posts %}{{ post_row(post, votes) }}{% else %}<p>No posts yet.</p>{% endfor %}
+{{ pager(page) }}
+{% endblock %}

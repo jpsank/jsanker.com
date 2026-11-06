@@ -1,0 +1,10 @@
+{% extends "layout.html" %}
+{% from "_macros.html" import post_row, pager with context %}
+{% block app_content %}
+<h3>Hi, {{ current_user.username }}!</h3>
+<h1>Your Feed</h1>
+{% for post in posts %}{{ post_row(post, votes) }}{% else %}
+<p>Nothing here. <a href="{{ url_for('main.explore_chats') }}">Find some chats to subscribe to.</a></p>
+{% endfor %}
+{{ pager(page) }}
+{% endblock %}

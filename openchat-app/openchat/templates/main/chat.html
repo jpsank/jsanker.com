@@ -1,0 +1,16 @@
+{% extends "layout.html" %}
+{% from "_macros.html" import post_row, pager, subscribe_button with context %}
+{% block app_content %}
+{{ subscribe_button(chat, subs) }}
+<h1>chat/{{ chat.name }}</h1>
+<p class="pre">{{ chat.about }}</p>
+<p>{{ chat.subscriber_count }} subscriber{{ '' if chat.subscriber_count == 1 else 's' }}
+   {% if current_user.is_authenticated and current_user.id == chat.creator_id %}&middot; <a href="{{ url_for('main.edit_chat', name=chat.name) }}">Edit</a>{% endif %}</p>
+{% if current_user.is_authenticated %}
+<p><a href="{{ url_for('main.make_post', name=chat.name) }}">Make a post</a></p>
+{% else %}
+<p><a href="{{ url_for('auth.login') }}">Sign in</a> to post.</p>
+{% endif %}
+{% for post in posts %}{{ post_row(post, votes, false) }}{% else %}<p>No posts yet.</p>{% endfor %}
+{{ pager(page) }}
+{% endblock %}

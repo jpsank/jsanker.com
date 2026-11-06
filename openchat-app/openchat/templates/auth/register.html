@@ -1,0 +1,7 @@
+{% extends "layout.html" %}
+{% from "_macros.html" import render_form with context %}
+{% block app_content %}
+<h1>Register</h1>
+<div class="row"><div class="col-md-4">{{ render_form(form, 'Register') }}</div></div>
+<p class="text-muted">No email address is collected, so a forgotten password can't be reset. Pick one you'll remember.</p>
+{% endblock %}

@@ -1,0 +1,8 @@
+{% extends "layout.html" %}
+{% from "_macros.html" import post_row, pager, search with context %}
+{% block app_content %}
+<h1>Popular</h1>
+{{ search(q, 'search posts') }}
+{% for post in posts %}{{ post_row(post, votes) }}{% else %}<p>No results.</p>{% endfor %}
+{{ pager(page) }}
+{% endblock %}

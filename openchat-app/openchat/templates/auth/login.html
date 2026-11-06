@@ -1,0 +1,8 @@
+{% extends "layout.html" %}
+{% from "_macros.html" import render_form with context %}
+{% block app_content %}
+<h1>Sign In</h1>
+<div class="row"><div class="col-md-4">{{ render_form(form, 'Sign In') }}</div></div>
+<br>
+<p>New here? <a href="{{ url_for('auth.register') }}">Register</a>. No email address needed.</p>
+{% endblock %}

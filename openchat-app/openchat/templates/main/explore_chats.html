@@ -1,0 +1,20 @@
+{% extends "layout.html" %}
+{% from "_macros.html" import pager, search, subscribe_button with context %}
+{% block app_content %}
+<h1>Top Chats</h1>
+<p><a href="{{ url_for('main.create_chat') }}">Create a new chat</a></p>
+{{ search(q, 'search chats') }}
+{% for chat in chats %}
+<table class="table table-hover">
+    <tr>
+        <td class="narrow-wide">{{ subscribe_button(chat, subs) }}</td>
+        <td>
+            <a href="{{ url_for('main.show_chat', name=chat.name) }}">chat/{{ chat.name }}</a>
+            {{ chat.subscriber_count }} subscriber{{ '' if chat.subscriber_count == 1 else 's' }}
+            <p class="pre">{{ chat.about|truncate(300) }}</p>
+        </td>
+    </tr>
+</table>
+{% else %}<p>No results.</p>{% endfor %}
+{{ pager(page) }}
+{% endblock %}
