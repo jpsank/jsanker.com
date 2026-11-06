@@ -24,6 +24,11 @@ final class OpenChat
     public const PER_PAGE     = 50;
     public const MAX_PER_PAGE = 100;
 
+    /** Image abuse limits. A stored image is at most ~1 MB, so the site-wide cap bounds disk use per day. */
+    public const IMAGES_PER_CLIENT_PER_DAY = 10;
+    public const IMAGES_PER_SITE_PER_DAY   = 300;
+    public const MIN_FREE_DISK_BYTES       = 2 * 1024 ** 3; // stop accepting images below 2 GB free
+
     public static function imagesEnabled(): bool
     {
         return getenv('OPENCHAT_ALLOW_IMAGES') === '1';
@@ -187,8 +192,6 @@ final class OpenChat
     public static function post(array $post, array $files): int
     {
         self::requireSameOrigin();
-        // Slurs are masked before storage, so the database never holds them. Same length, so the limit still holds.
-        $text = Censor::clean(self::cleanText($post['text'] ?? null));
 
         $file = $files['userfile'] ?? null;
         $hasFile = is_array($file) && is_int($file['error'] ?? null) && $file['error'] !== UPLOAD_ERR_NO_FILE;
@@ -196,14 +199,31 @@ final class OpenChat
             throw new OpenChatException('Image uploads are turned off on this board.', 403);
         }
 
-        // Everything cheap is validated; now count this against the client's budget
-        // (before any image decoding, which is the expensive part).
+        // Every attempt counts against the client's budget, even one that fails validation below, so a
+        // flood of bad requests cannot be free. All of this happens before any image decoding (the expensive part).
         if (!rate_limit('openchat_post_min', 6, 60)) {
             throw new OpenChatException('You are posting too fast. Try again in a minute.', 429, 60);
         }
         if (!rate_limit('openchat_post_day', 60, 86400)) {
             throw new OpenChatException('Daily post limit reached. Try again tomorrow.', 429, 3600);
         }
+        if ($hasFile) {
+            // Images cost disk and CPU, so they get a tighter personal budget and a sitewide cap, and are
+            // paused outright when the disk is nearly full.
+            if (!rate_limit('openchat_img_day', self::IMAGES_PER_CLIENT_PER_DAY, 86400)) {
+                throw new OpenChatException('Daily image limit reached. Try again tomorrow, or post without an image.', 429, 3600);
+            }
+            if (!rate_limit('openchat_img_site_day', self::IMAGES_PER_SITE_PER_DAY, 86400, true)) {
+                throw new OpenChatException('The board has reached its image limit for today. Try again tomorrow.', 429, 3600);
+            }
+            $free = @disk_free_space(self::uploadDir());
+            if ($free !== false && $free < self::MIN_FREE_DISK_BYTES) {
+                throw new OpenChatException('Image uploads are paused right now. Post without an image.', 503, 3600);
+            }
+        }
+
+        // Slurs are masked before storage, so the database never holds them. Same length, so the limit still holds.
+        $text = Censor::clean(self::cleanText($post['text'] ?? null));
 
         $image = null;
         if ($hasFile) {

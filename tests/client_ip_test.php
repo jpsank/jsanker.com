@@ -28,5 +28,22 @@ expect_ip(['REMOTE_ADDR' => '172.18.0.3', 'HTTP_CF_CONNECTING_IP' => 'not-an-ip'
 expect_ip(['REMOTE_ADDR' => '172.18.0.3'], '172.18.0.3', 'no header');
 expect_ip([], '0.0.0.0', 'no peer');
 
+// rate-limit identity: IPv4 as is, IPv6 by /64, v4-mapped v6 as the IPv4 address
+$bucketCases = [
+    ['203.0.113.7', '203.0.113.7'],
+    ['2001:db8:1:2:aaaa:bbbb:cccc:dddd', '2001:db8:1:2::/64'],
+    ['2001:db8:1:2::1', '2001:db8:1:2::/64'],
+    ['2001:db8:1:3::1', '2001:db8:1:3::/64'],
+    ['::ffff:203.0.113.7', '203.0.113.7'],
+    ['not-an-ip', 'not-an-ip'],
+];
+foreach ($bucketCases as [$in, $want]) {
+    $got = ip_bucket($in);
+    if ($got !== $want) {
+        $fail++;
+        echo "FAIL: ip_bucket($in) = $got, wanted $want\n";
+    }
+}
+
 echo $fail === 0 ? "client_ip: all ok\n" : "client_ip: $fail failed\n";
 exit($fail === 0 ? 0 : 1);

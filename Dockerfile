@@ -2,7 +2,7 @@
 # projects and their SQLite data all live behind a single process.
 FROM dunglas/frankenphp:1-php8.4
 
-RUN install-php-extensions gd pdo_sqlite opcache
+RUN install-php-extensions gd pdo_sqlite opcache exif
 
 COPY docker/php.ini /usr/local/etc/php/conf.d/zz-jsanker.ini
 COPY docker/Caddyfile /etc/frankenphp/Caddyfile

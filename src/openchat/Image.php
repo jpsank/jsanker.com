@@ -74,10 +74,20 @@ final class OpenChatImage
             throw new OpenChatImageException('That image is too large to process.', 413);
         }
 
+        if ($mime === 'image/gif') {
+            self::checkGifFrames($path);
+        }
+
         try {
             $src = $decoder($path);
             if ($src === false) {
                 throw new OpenChatImageException('That image could not be read.');
+            }
+            // Trust what the decoder produced, not what the header claimed.
+            $w = imagesx($src);
+            $h = imagesy($src);
+            if ($w < 1 || $h < 1 || $w > self::MAX_SIDE || $h > self::MAX_SIDE || $w * $h > self::MAX_PIXELS) {
+                throw new OpenChatImageException('That image has too many pixels (8000 px per side, 16 megapixels max).', 413);
             }
 
             // Scale down (never up) so the longest side is OUT_SIDE.
@@ -119,6 +129,57 @@ final class OpenChatImage
             error_log('openchat image: ' . $t::class . ': ' . $t->getMessage());
             throw new OpenChatImageException('That image could not be read.');
         }
+    }
+
+    /**
+     * getimagesize() reports a GIF's logical screen size, but libgd allocates the size of each frame, and the
+     * two are independent fields in the file. Walk the GIF's blocks and apply the pixel caps to every frame
+     * before anything is decoded. Bounded: each step moves forward and the file is already <= MAX_BYTES.
+     */
+    private static function checkGifFrames(string $path): void
+    {
+        $bad = static fn(): OpenChatImageException => new OpenChatImageException('That image could not be read.');
+        $d = @file_get_contents($path);
+        if ($d === false || strlen($d) < 14) {
+            throw $bad();
+        }
+        $n = strlen($d);
+        $flags = ord($d[10]);
+        $pos = 13 + (($flags & 0x80) ? 3 * (1 << (($flags & 7) + 1)) : 0);
+
+        $skipSubBlocks = static function (int $p) use ($d, $n, $bad): int {
+            while ($p < $n) {
+                $len = ord($d[$p++]);
+                if ($len === 0) {
+                    return $p;
+                }
+                $p += $len;
+            }
+            throw $bad();
+        };
+
+        while ($pos < $n) {
+            $block = ord($d[$pos]);
+            if ($block === 0x3B) {           // trailer
+                return;
+            }
+            if ($block === 0x21) {           // extension: introducer, label, then data sub-blocks
+                $pos = $skipSubBlocks($pos + 2);
+                continue;
+            }
+            if ($block !== 0x2C || $pos + 10 > $n) {
+                throw $bad();                // not an image descriptor either: malformed
+            }
+            $f = unpack('vleft/vtop/vw/vh', substr($d, $pos + 1, 8));
+            if ($f['w'] < 1 || $f['h'] < 1 || $f['w'] > self::MAX_SIDE || $f['h'] > self::MAX_SIDE
+                || $f['w'] * $f['h'] > self::MAX_PIXELS) {
+                throw new OpenChatImageException('That image has too many pixels (8000 px per side, 16 megapixels max).', 413);
+            }
+            $local = ord($d[$pos + 9]);
+            $pos += 10 + (($local & 0x80) ? 3 * (1 << (($local & 7) + 1)) : 0);
+            $pos = $skipSubBlocks($pos + 1); // +1: LZW minimum code size byte
+        }
+        throw $bad();                        // ran off the end without a trailer
     }
 
     private static function fitsInMemory(int $w, int $h): bool

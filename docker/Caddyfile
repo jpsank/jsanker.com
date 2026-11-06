@@ -4,6 +4,11 @@
 	servers {
 		# Trust X-Forwarded-For only from private-range proxies (Fly, Docker, etc.)
 		trusted_proxies static private_ranges
+		# Drop connections that dribble headers or an upload body, so a few slow clients cannot tie up every PHP thread.
+		timeouts {
+			read_header 10s
+			read_body 30s
+		}
 	}
 }
 

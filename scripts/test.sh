@@ -14,6 +14,8 @@ docker run --rm -v "$PWD":/w -w /w jsanker-test sh -c '
   php tests/censor_test.php
   echo "== client ip"
   php tests/client_ip_test.php
+  echo "== openchat images"
+  php tests/openchat_image_test.php
 '
 
 # The Game of Life stepper is JavaScript; test it with Node when it is installed (the app image has none).

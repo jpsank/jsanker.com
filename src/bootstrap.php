@@ -289,7 +289,7 @@ function db(string $name): PDO
  * Sliding-window limiter keyed by (bucket, hashed client IP).
  * Returns true if the action is allowed (and records it), false if over the limit.
  */
-function rate_limit(string $bucket, int $max, int $windowSeconds): bool
+function rate_limit(string $bucket, int $max, int $windowSeconds, bool $global = false): bool
 {
     $pdo = db('ratelimit');
     $pdo->exec('CREATE TABLE IF NOT EXISTS hits (
@@ -298,16 +298,45 @@ function rate_limit(string $bucket, int $max, int $windowSeconds): bool
     )');
     $pdo->exec('CREATE INDEX IF NOT EXISTS hits_key_at ON hits (key, at)');
 
-    $key = $bucket . ':' . hash_hmac('sha256', client_ip(), app_secret());
+    // $global = one shared bucket for all visitors (a site-wide cap); otherwise one bucket per client.
+    $key = $bucket . ':' . ($global ? 'all' : hash_hmac('sha256', ip_bucket(client_ip()), app_secret()));
     $now = time();
 
-    $pdo->prepare('DELETE FROM hits WHERE at < :cutoff')->execute([':cutoff' => $now - 86400]);
+    // Check-and-record inside one write transaction, so parallel requests cannot all slip under the limit.
+    $pdo->exec('BEGIN IMMEDIATE');
+    try {
+        $pdo->prepare('DELETE FROM hits WHERE at < :cutoff')->execute([':cutoff' => $now - 86400]);
 
-    $count = $pdo->prepare('SELECT COUNT(*) FROM hits WHERE key = :key AND at > :since');
-    $count->execute([':key' => $key, ':since' => $now - $windowSeconds]);
-    if ((int) $count->fetchColumn() >= $max) {
-        return false;
+        $count = $pdo->prepare('SELECT COUNT(*) FROM hits WHERE key = :key AND at > :since');
+        $count->execute([':key' => $key, ':since' => $now - $windowSeconds]);
+        if ((int) $count->fetchColumn() >= $max) {
+            $pdo->exec('COMMIT');
+            return false;
+        }
+        $pdo->prepare('INSERT INTO hits (key, at) VALUES (:key, :at)')->execute([':key' => $key, ':at' => $now]);
+        $pdo->exec('COMMIT');
+        return true;
+    } catch (Throwable $t) {
+        if ($pdo->inTransaction()) {
+            $pdo->exec('ROLLBACK');
+        }
+        throw $t;
     }
-    $pdo->prepare('INSERT INTO hits (key, at) VALUES (:key, :at)')->execute([':key' => $key, ':at' => $now]);
-    return true;
+}
+
+/**
+ * What identifies a visitor for rate limiting: the address itself for IPv4, but the /64 network for IPv6,
+ * because one home or hosting connection controls a whole /64 and could otherwise mint endless "new" visitors.
+ */
+function ip_bucket(string $ip): string
+{
+    $packed = @inet_pton($ip);
+    if ($packed === false || strlen($packed) !== 16) {
+        return $ip;
+    }
+    // an IPv4-mapped IPv6 address (::ffff:a.b.c.d) is really an IPv4 client
+    if (str_starts_with($packed, str_repeat("\0", 10) . "\xff\xff")) {
+        return (string) inet_ntop(substr($packed, 12));
+    }
+    return inet_ntop(substr($packed, 0, 8) . str_repeat("\0", 8)) . '/64';
 }
