@@ -1,8 +1,18 @@
-# jsanker.com — one container: Caddy + PHP (FrankenPHP). Static pages, the PHP
-# projects and their SQLite data all live behind a single process.
+# jsanker.com — one container: Caddy + PHP (FrankenPHP) for the site and the PHP projects, plus gunicorn
+# running the Flask app OpenChat behind Caddy at /openchat/. Both keep their SQLite data in one volume.
 FROM dunglas/frankenphp:1-php8.4
 
 RUN install-php-extensions gd pdo_sqlite opcache exif
+
+# Python for OpenChat, in its own virtualenv (dependencies first, so this layer is cached across code changes)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-venv \
+ && rm -rf /var/lib/apt/lists/*
+COPY openchat-app/requirements.txt /tmp/openchat-requirements.txt
+RUN python3 -m venv /opt/openchat-venv \
+ && /opt/openchat-venv/bin/pip install --no-cache-dir -r /tmp/openchat-requirements.txt \
+ && rm /tmp/openchat-requirements.txt
+ENV PYTHONDONTWRITEBYTECODE=1
 
 COPY docker/php.ini /usr/local/etc/php/conf.d/zz-jsanker.ini
 COPY docker/Caddyfile /etc/frankenphp/Caddyfile
@@ -12,6 +22,8 @@ COPY src ./src
 COPY bin ./bin
 COPY data ./data
 COPY public ./public
+COPY openchat-app ./openchat-app
+COPY docker/start.sh /usr/local/bin/start.sh
 
 # Run unprivileged. APP_DATA_DIR is the only writable place (mount a volume
 # there); /data and /config are Caddy's own certificate/config state.
@@ -25,3 +37,7 @@ USER ${USER}
 
 VOLUME ["/var/lib/jsanker", "/data"]
 EXPOSE 80 443
+
+# Runs Caddy/FrankenPHP and gunicorn side by side; exits if either stops so Docker restarts the container.
+ENTRYPOINT ["/usr/local/bin/start.sh"]
+CMD []

@@ -2,7 +2,8 @@
 declare(strict_types=1);
 
 /**
- * OpenChat — an open ledger for anonymous public messages.
+ * OpenChat Classic — an open ledger for anonymous public messages (the original OpenChat; the Reddit-style
+ * successor is the Flask app in openchat-app/, served at /openchat/).
  * Ported from the original PHP/SQLite app and hardened: prepared statements,
  * validated and rate-limited posting, re-encoded image uploads stored outside
  * the web root (and only when OPENCHAT_ALLOW_IMAGES=1), escaped output.
@@ -47,17 +48,18 @@ $images = OpenChat::imagesEnabled();
 
 page_start([
     'legacy'      => true,
-    'title'       => 'OpenChat',
+    'title'       => 'OpenChat Classic',
     'description' => 'An open ledger for posting anonymous public messages',
-    'crumbs'      => [['OpenChat', 'index.php']],
+    'crumbs'      => [['OpenChat Classic', 'index.php']],
     'styles'      => ['/projects/openchat/style.css'],
     'scripts'     => ['/projects/openchat/script.js'],
 ]);
 ?>
 
 	<section id="jumbo">
-		<h1>OpenChat</h1>
-		<p>welcome to openchat, an open ledger for posting anonymous public messages</p>
+		<h1>OpenChat Classic</h1>
+		<p>welcome to openchat classic, an open ledger for posting anonymous public messages</p>
+		<p><a href="/openchat/">Try the new OpenChat</a>, a Reddit-like successor with accounts, chats and voting</p>
 	</section>
 
 	<section id="main">

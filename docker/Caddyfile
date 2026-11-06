@@ -40,6 +40,17 @@
 	}
 	respond @dotfiles 404
 
+	# OpenChat is a Flask app served by gunicorn inside this same container (see docker/start.sh).
+	# Its own pages set a strict CSP; the app sees the /openchat prefix as SCRIPT_NAME.
+	redir /openchat /openchat/ 308
+	handle /openchat/* {
+		reverse_proxy 127.0.0.1:8000 {
+			transport http {
+				response_header_timeout 30s
+			}
+		}
+	}
+
 	# Long-cache immutable-ish static assets
 	@static path *.css *.js *.svg *.png *.jpg *.jpeg *.gif *.webp *.ico *.woff2
 	header @static Cache-Control "public, max-age=3600"

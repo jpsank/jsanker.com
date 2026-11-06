@@ -24,12 +24,15 @@ check() { # path expected_status
 for p in / /projects/ /photos/ /blog/ /projects/chemcalc/ /projects/chemcalc/table.php \
          /projects/openchat/ /projects/apedia/ /projects/speedreed/ /projects/wireworld/ \
          /projects/audiovisual/ /projects/hha-grades/ /projects/umusic/ \
-         /projects/coronariskmap/ /projects/lucas-gifs/ /api/pattern.php /assets/site.css; do
+         /projects/coronariskmap/ /projects/lucas-gifs/ /api/pattern.php /assets/site.css \
+         /openchat/ /openchat/popular /openchat/chats /openchat/leaderboard /openchat/auth/login \
+         /openchat/static/css/style.css; do
   check "$p" 200
 done
 
 # Things that must NOT be reachable
-for p in /nope /.env /.git/config /src/bootstrap.php /data/chemcalc/elements.json /missing.php; do
+for p in /nope /.env /.git/config /src/bootstrap.php /data/chemcalc/elements.json /missing.php \
+         /openchat/nope /openchat/secret.key /openchat/app.db /openchat/uploads/..%2fsecret.key /openchat-app/wsgi.py; do
   check "$p" 404
 done
 
@@ -39,6 +42,11 @@ for h in content-security-policy x-content-type-options x-frame-options referrer
   if echo "$headers" | grep -qi "^$h:"; then echo "ok    header $h"; else echo "FAIL  header $h missing"; fail=1; fi
 done
 if echo "$headers" | grep -qi '^server:'; then echo "warn  Server header present"; fi
+
+# OpenChat (Flask, behind Caddy) must carry its own strict CSP and must not need any third party
+oc=$(curl -sI "http://localhost:$PORT/openchat/")
+if echo "$oc" | grep -qi "^content-security-policy:.*default-src 'none'"; then echo "ok    openchat CSP"; else echo "FAIL  openchat CSP missing"; fail=1; fi
+if curl -s "http://localhost:$PORT/openchat/" | grep -qE '(src|href)="https?://'; then echo "FAIL  openchat loads a third-party resource"; fail=1; else echo "ok    openchat is self-contained"; fi
 
 # Runs unprivileged
 user=$(docker exec "$NAME" id -un)

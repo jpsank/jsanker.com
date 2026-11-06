@@ -15,7 +15,8 @@ For anything more recent, <a href="mailto:julian@sankergroup.org">email me</a>.<
 <h2>Running</h2>
 <ul class="plain">
   <li><a href="/projects/chemcalc/">ChemCalc</a> — thermodynamic properties of molecules and chemical equations (AP Chem), with an equation balancer.</li>
-  <li><a href="/projects/openchat/">OpenChat</a> — an open ledger for posting anonymous public messages.</li>
+  <li><a href="/openchat/">OpenChat</a> — a Reddit-like social site: accounts, chats, posts, comments and voting. The successor to OpenChat Classic.</li>
+  <li><a href="/projects/openchat/">OpenChat Classic</a> — an open ledger for posting anonymous public messages.</li>
   <li><a href="/projects/apedia/">APedia</a> — crowd-sourced Q&amp;A for AP classes. Accounts, voting, comments.</li>
   <li><a href="/projects/speedreed/">Speedreed</a> — read public-domain books one word at a time.</li>
   <li><a href="/projects/wireworld/">WireWorld</a> — Turing-complete cellular automaton for simulating logic gates.</li>

@@ -1,23 +1,24 @@
 # jsanker.com
 
-Julian Sanker's personal site: plain HTML/PHP, one stylesheet for the new pages, no build step, one container.
+Julian Sanker's personal site: plain HTML/PHP, one stylesheet for the new pages, no build step, one container. The one exception to "all PHP" is OpenChat, a small Flask app that runs in the same container.
 
 ## Layout
 
 ```
 public/            document root (the only thing the web server can see)
   index.php        home
-  projects/        ChemCalc, OpenChat, APedia, Speedreed, WireWorld, Audiovisual + cut-down "souvenirs" (HHA Grades, uMusic, CoronaRiskMap, Lucas Gifs)
+  projects/        ChemCalc, OpenChat Classic, APedia, Speedreed, WireWorld, Audiovisual + cut-down "souvenirs" (HHA Grades, uMusic, CoronaRiskMap, Lucas Gifs)
   blog/            Firebase-backed blog (vanilla ES modules, no React)
   life/            life.js + life.css for the Game of Life on the home page (/life/ redirects home); api/pattern.php serves random RLE patterns
   photos/          photo page
   assets/site.css  the new minimalist design (system light/dark) for home, blog, photos
   assets/legacy/   the original puffyboa.xyz shared.css + favicon, used by the ported projects
+openchat-app/      OpenChat (the Flask app, served at /openchat/): see "OpenChat" below
 src/               shared PHP (bootstrap, layout, Censor, LegacyClean) and per-project server code — NOT web-accessible
 bin/               bin/migrate-legacy.php (one-off import of the 2019 databases), bin/backup.php (online backup)
 tests/             word-filter tests
 data/              read-only app data (Game of Life patterns, ChemCalc tables, Speedreed texts) — NOT web-accessible
-docker/            Caddyfile + php.ini
+docker/            Caddyfile, php.ini, start.sh (entrypoint: web server + gunicorn)
 firestore.rules    Firestore security rules for the blog (deploy with the Firebase CLI)
 scripts/smoke.sh   builds the image, boots it, checks routes and security headers
 scripts/backup.sh, scripts/restore.sh   production backup / restore of the data volume
@@ -43,10 +44,10 @@ publish ports 80/443 with an override and set `SERVER_NAME`. Netlify can't host 
 
 - Behind the tunnel leave `SERVER_NAME` unset (Cloudflare does the HTTPS). On a host that faces the internet
   directly, set `SERVER_NAME=jsanker.com` for Caddy's automatic HTTPS.
-- Mount a **persistent volume at `/var/lib/jsanker`** — SQLite databases (OpenChat, APedia), sessions,
+- Mount a **persistent volume at `/var/lib/jsanker`** — SQLite databases (OpenChat Classic, APedia, OpenChat), sessions,
   rate-limit state, and uploads live there. Also persist `/data` (Caddy's certificates).
 - Set the `FIREBASE_*` variables from `.env.example` for the blog.
-- Optional: `OPENCHAT_ALLOW_IMAGES=1` to allow image uploads on OpenChat (off by default — it is an
+- Optional: `OPENCHAT_ALLOW_IMAGES=1` to allow image uploads on OpenChat Classic (off by default — it is an
   anonymous public board with no moderation).
 - Run a **single instance**: SQLite is on a local volume.
 - **Back up `/var/lib/jsanker`**: `scripts/backup.sh` (nightly cron) and copy the result off the server.
@@ -56,7 +57,7 @@ publish ports 80/443 with an override and set `SERVER_NAME`. Netlify can't host 
 
 ## Old projects keep their original look
 
-The ported projects (ChemCalc, OpenChat, APedia, Speedreed, WireWorld, Audiovisual and the four souvenirs) deliberately
+The ported projects (ChemCalc, OpenChat Classic, APedia, Speedreed, WireWorld, Audiovisual and the four souvenirs) deliberately
 keep their original 2018-2020 UI: each uses its own original `style.css` on top of `assets/legacy/shared.css`, via
 `page_start(['legacy' => true, ...])` (add `'nobar' => true` for pages that never had the breadcrumb bar). Only the
 code underneath was patched; the new site theme is not applied to them. The original pages had no doctype, so a few
@@ -68,7 +69,7 @@ The old puffyboa.xyz projects were PHP written in high school (SQL injection, XS
 uploads, infinite loops reachable from user input). They were ported, not rewritten, and fixed:
 
 - every value printed into HTML goes through `e()`; every SQL statement is a prepared statement
-- every state-changing request is a POST with a CSRF token (OpenChat is anonymous, so it checks `Sec-Fetch-Site`/`Origin` instead)
+- every state-changing request is a POST with a CSRF token (OpenChat Classic is anonymous, so it checks `Sec-Fetch-Site`/`Origin` instead)
 - strict CSP on every page: no inline script, no inline style, no third-party origins (the blog widens it only for Firebase)
 - hardened sessions (HttpOnly, SameSite, strict mode, regenerated on login)
 - rate limits on login, registration, posting and voting
@@ -77,7 +78,7 @@ uploads, infinite loops reachable from user input). They were ported, not rewrit
 
 ## Word filter
 
-`src/Censor.php` masks slurs with asterisks (same length) **when text is written**, in OpenChat messages and
+`src/Censor.php` masks slurs with asterisks (same length) **when text is written**, in OpenChat Classic messages, OpenChat posts and comments, and
 APedia questions/answers/comments, and rejects APedia usernames that contain one. It handles case, leetspeak,
 repeated letters, punctuation between letters, look-alike Unicode characters and zero-width padding, and has
 explicit exceptions for innocent words ("snigger", "niggle", "Niger", "Maine Coon", "flame retardant"...).
@@ -97,23 +98,57 @@ scripts/migrate-legacy.sh "/path/to/puffyboa.xyz/projects/db"
 - **Keeps:** all messages, dates, APedia users (with their password hashes, so logins still work), posts, ids
   and votes. Old APedia text was stored HTML-escaped; it is decoded once.
 - **Cleans:** slurs masked; injected markup (script/iframe blocks, tags with event handlers, `javascript:`)
-  removed; control and bidi characters stripped; anything over the new limits (OpenChat 1000, APedia 5000
+  removed; control and bidi characters stripped; anything over the new limits (OpenChat Classic 1000, APedia 5000
   characters) truncated; usernames that are invalid or contain a slur become `user<ID>`.
 - **Reports:** counts and row ids with reason codes only — never message content.
 - **Safe to rerun:** the destination must be empty (otherwise it refuses). To redo an import, delete
   `db/openchat.sqlite` / `db/apedia.sqlite` in the data volume. Legacy files are read as copies.
 - **Do not commit the legacy databases** — they contain messages and password hashes.
-- **Old OpenChat images:** the 24 attachment files from 2019 no longer exist anywhere on disk (the databases only
+- **Old OpenChat Classic images:** the 24 attachment files from 2019 no longer exist anywhere on disk (the databases only
   kept a flag), so those 24 messages are imported as text. If you find the files (they were `uploads/<id>`, named by
   the old `openchat2.db` message id), rerun the import with `--uploads=/path/to/them`: each file goes through the
   same sanitiser as a new upload (type check, size/pixel caps, re-encode) and is stored outside the web root.
   Existing images are always shown; `OPENCHAT_ALLOW_IMAGES` only controls whether *new* uploads are allowed.
 
+## OpenChat (Flask) and OpenChat Classic
+
+Same naming as the original puffyboa.xyz: **OpenChat Classic** is the anonymous PHP message ledger at
+`/projects/openchat/`; **OpenChat** is the later Reddit-style Flask app (accounts, chats, posts with images,
+nested comments, voting, subscriptions, leaderboard) at `/openchat/`. Source: `openchat-app/`, from the `v2`
+branch of github.com/puffyboa/openchat plus its uncommitted edits.
+
+It runs **inside the same container**: `docker/start.sh` starts FrankenPHP (Caddy) and gunicorn (one worker,
+four threads, ~60-80 MB), and Caddy proxies `/openchat/*` to gunicorn on 127.0.0.1:8000. If OpenChat crashes it is
+restarted after 3 seconds and the rest of the site keeps serving. Its data (`app.db`, `uploads/`, `secret.key`)
+lives in `/var/lib/jsanker/openchat/`, inside the same volume as everything else.
+
+What changed from the 2019-2020 original (Flask 1.1, Werkzeug 0.16, Flask-Uploads, Flask-Bootstrap):
+
+- current Flask 3 / SQLAlchemy 2 / Pillow; the Bootstrap 3 CSS is vendored, avatars are local identicons (Gravatar
+  leaked an email hash per user), relative times are rendered server-side (no moment.js); nothing is loaded from
+  another origin, and the strict CSP applies
+- **no email addresses are collected** (the password-reset flow needed mail and was already disabled), so a forgotten
+  password cannot be reset; passwords are scrypt-hashed
+- every state change is a POST with a CSRF token; voting, subscribing and logout used to be plain GET links
+- the old delete-post route let any signed-in user delete anyone's post; now only the author can, with cascading
+  deletes and removal of the image file
+- commenting requires an account (it used to allow anonymous comments); replies work (nested up to 6 levels)
+- text is stored as written and escaped on output (no `|safe`); slurs are masked when written, using a Python port of
+  `src/Censor.php`
+- uploads: JPEG/PNG/GIF/WebP only, size and pixel caps checked before decoding, re-encoded with Pillow, stored under a
+  random name outside the static folder
+- rate limits (in memory, per client): registration, failed logins, posts, comments, votes, chat creation
+- user and chat names are `[A-Za-z0-9_-]` (3-24 / 3-30 characters)
+
+There was no production database to bring over (the old puffyboa.xyz server is gone and only a 2020 test database
+survives), so OpenChat starts empty. Tests: `docker run --rm -v "$PWD/openchat-app":/src -w /src python:3.13-slim sh -c
+"pip install -q -r requirements.txt && python -m unittest discover -s tests"`.
+
 ## What was ported, and what wasn't
 
 | Project | Status |
 | --- | --- |
-| ChemCalc, OpenChat, APedia, Speedreed | PHP, ported + hardened |
+| ChemCalc, OpenChat Classic, APedia, Speedreed | PHP, ported + hardened |
 | WireWorld, Audiovisual.js | JS, ported to the strict CSP |
 | Game of Life | rewritten in vanilla JS; pattern API now PHP |
 | Blog | Firebase backend unchanged; front end rewritten without React |
@@ -123,4 +158,4 @@ scripts/migrate-legacy.sh "/path/to/puffyboa.xyz/projects/db"
 | Lucas Gifs | live, cut down from 40 MB to 4 MB (animated WebP) |
 | SharedLlama | never finished (MySQL prototype, fake login) — not ported |
 | Speedreed texts | only the public-domain H.G. Wells books are included |
-| Python "new OpenChat" (Reddit-style) | not ported (separate app with emails and accounts) |
+| OpenChat (the Reddit-style Flask successor to OpenChat Classic) | live at `/openchat/`, modernised: see "OpenChat" |
