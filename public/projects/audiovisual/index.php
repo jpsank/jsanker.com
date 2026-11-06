@@ -30,7 +30,7 @@ header('Content-Type: text/html; charset=utf-8');
     <link rel="stylesheet" type="text/css" href="style.css" />
 </head>
 <body>
-<input type="file" name="file" id="file" accept=".mp3">
+<input type="file" name="file" id="file" accept="audio/*,.mp3,.wav,.m4a,.ogg,.aac,.flac">
 <button id="fullscreen">Fullscreen</button>
 
 </body>
