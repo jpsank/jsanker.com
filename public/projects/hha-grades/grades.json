@@ -1,0 +1,123 @@
+{
+  "scholar": "Demo Scholar",
+  "term": "Fall term (sample data)",
+  "courses": [
+    {
+      "name": "AP Calculus BC",
+      "categories": [
+        {"name": "Tests", "weight": 50},
+        {"name": "Quizzes", "weight": 30},
+        {"name": "Homework", "weight": 20}
+      ],
+      "assignments": [
+        {"date": "2025-09-05", "name": "Limits and Continuity Test", "category": "Tests", "score": 46, "possible": 50},
+        {"date": "2025-09-26", "name": "Derivative Rules Test", "category": "Tests", "score": 88, "possible": 100},
+        {"date": "2025-10-17", "name": "Applications of Derivatives Test", "category": "Tests", "score": 41, "possible": 50},
+        {"date": "2025-09-12", "name": "Quiz 1: Limit Laws", "category": "Quizzes", "score": 9, "possible": 10},
+        {"date": "2025-09-19", "name": "Quiz 2: Squeeze Theorem", "category": "Quizzes", "score": 8, "possible": 10},
+        {"date": "2025-10-03", "name": "Quiz 3: Chain Rule", "category": "Quizzes", "score": 10, "possible": 10},
+        {"date": "2025-10-10", "name": "Quiz 4: Related Rates", "category": "Quizzes", "score": 7, "possible": 10},
+        {"date": "2025-09-08", "name": "Problem Set 1", "category": "Homework", "score": 20, "possible": 20},
+        {"date": "2025-09-22", "name": "Problem Set 2", "category": "Homework", "score": 17, "possible": 20},
+        {"date": "2025-10-06", "name": "Problem Set 3", "category": "Homework", "score": 18, "possible": 20},
+        {"date": "2025-10-20", "name": "Problem Set 4", "category": "Homework", "score": null, "possible": 20}
+      ]
+    },
+    {
+      "name": "AP Biology",
+      "categories": [
+        {"name": "Exams", "weight": 40},
+        {"name": "Labs", "weight": 40},
+        {"name": "Classwork", "weight": 20}
+      ],
+      "assignments": [
+        {"date": "2025-09-18", "name": "Unit 1 Exam: Chemistry of Life", "category": "Exams", "score": 71, "possible": 80},
+        {"date": "2025-10-16", "name": "Unit 2 Exam: Cell Structure", "category": "Exams", "score": 64, "possible": 80},
+        {"date": "2025-09-10", "name": "Lab: Enzyme Activity", "category": "Labs", "score": 28, "possible": 30},
+        {"date": "2025-09-30", "name": "Lab: Osmosis in Potato Cores", "category": "Labs", "score": 26, "possible": 30},
+        {"date": "2025-10-14", "name": "Lab: Microscope Skills", "category": "Labs", "score": 24, "possible": 30},
+        {"date": "2025-09-15", "name": "Reading Guide: Chapter 2", "category": "Classwork", "score": 10, "possible": 10},
+        {"date": "2025-09-29", "name": "Reading Guide: Chapter 4", "category": "Classwork", "score": 9, "possible": 10},
+        {"date": "2025-10-13", "name": "Concept Map: Organelles", "category": "Classwork", "score": 12, "possible": 15}
+      ]
+    },
+    {
+      "name": "English Literature",
+      "categories": [
+        {"name": "Essays", "weight": 50},
+        {"name": "Discussion", "weight": 25},
+        {"name": "Reading Checks", "weight": 25}
+      ],
+      "assignments": [
+        {"date": "2025-09-24", "name": "Essay 1: Character and Setting", "category": "Essays", "score": 84, "possible": 100},
+        {"date": "2025-10-22", "name": "Essay 2: Unreliable Narrators", "category": "Essays", "score": 91, "possible": 100},
+        {"date": "2025-09-17", "name": "Seminar Participation 1", "category": "Discussion", "score": 8, "possible": 10},
+        {"date": "2025-10-08", "name": "Seminar Participation 2", "category": "Discussion", "score": 10, "possible": 10},
+        {"date": "2025-09-12", "name": "Reading Check: Part One", "category": "Reading Checks", "score": 14, "possible": 20},
+        {"date": "2025-09-26", "name": "Reading Check: Part Two", "category": "Reading Checks", "score": 17, "possible": 20},
+        {"date": "2025-10-10", "name": "Reading Check: Part Three", "category": "Reading Checks", "score": 15, "possible": 20}
+      ]
+    },
+    {
+      "name": "World History",
+      "categories": [
+        {"name": "Tests", "weight": 45},
+        {"name": "Projects", "weight": 35},
+        {"name": "Homework", "weight": 20}
+      ],
+      "assignments": [
+        {"date": "2025-09-20", "name": "Ancient Rivers Test", "category": "Tests", "score": 58, "possible": 75},
+        {"date": "2025-10-18", "name": "Classical Empires Test", "category": "Tests", "score": 52, "possible": 75},
+        {"date": "2025-10-01", "name": "Project: Trade Route Map", "category": "Projects", "score": 45, "possible": 50},
+        {"date": "2025-09-10", "name": "Timeline Worksheet", "category": "Homework", "score": 8, "possible": 10},
+        {"date": "2025-09-24", "name": "Primary Source Analysis", "category": "Homework", "score": 6, "possible": 10},
+        {"date": "2025-10-08", "name": "Map Labeling", "category": "Homework", "score": 0, "possible": 10},
+        {"date": "2025-10-21", "name": "Document Questions", "category": "Homework", "score": 9, "possible": 10}
+      ]
+    },
+    {
+      "name": "Computer Science",
+      "categories": [
+        {"name": "Programs", "weight": 60},
+        {"name": "Quizzes", "weight": 25},
+        {"name": "Participation", "weight": 15}
+      ],
+      "assignments": [
+        {"date": "2025-09-09", "name": "Program 1: Hello, Functions", "category": "Programs", "score": 50, "possible": 50},
+        {"date": "2025-09-23", "name": "Program 2: Text Adventure", "category": "Programs", "score": 100, "possible": 100},
+        {"date": "2025-10-14", "name": "Program 3: Gradebook Parser", "category": "Programs", "score": 96, "possible": 100},
+        {"date": "2025-09-16", "name": "Quiz: Loops and Lists", "category": "Quizzes", "score": 19, "possible": 20},
+        {"date": "2025-10-07", "name": "Quiz: Dictionaries", "category": "Quizzes", "score": 20, "possible": 20},
+        {"date": "2025-10-21", "name": "Stand-up Check-in", "category": "Participation", "score": 5, "possible": 5}
+      ]
+    },
+    {
+      "name": "Spanish III",
+      "categories": [
+        {"name": "Tests", "weight": 40},
+        {"name": "Oral Practice", "weight": 30},
+        {"name": "Written Work", "weight": 30}
+      ],
+      "assignments": [
+        {"date": "2025-09-19", "name": "Test: Preterite Tense", "category": "Tests", "score": 36, "possible": 50},
+        {"date": "2025-10-17", "name": "Test: Imperfect Tense", "category": "Tests", "score": 33, "possible": 50},
+        {"date": "2025-09-26", "name": "Oral: Describe Your Weekend", "category": "Oral Practice", "score": 22, "possible": 30},
+        {"date": "2025-10-10", "name": "Oral: Ordering at a Restaurant", "category": "Oral Practice", "score": 24, "possible": 30},
+        {"date": "2025-09-12", "name": "Vocabulary Sheet 1", "category": "Written Work", "score": 15, "possible": 20},
+        {"date": "2025-10-03", "name": "Vocabulary Sheet 2", "category": "Written Work", "score": 17, "possible": 20},
+        {"date": "2025-10-22", "name": "Short Paragraph: Mi Familia", "category": "Written Work", "score": 12, "possible": 20}
+      ]
+    },
+    {
+      "name": "Independent Research Seminar",
+      "categories": [
+        {"name": "Proposal", "weight": 40},
+        {"name": "Progress Reports", "weight": 60}
+      ],
+      "assignments": [
+        {"date": "2025-11-14", "name": "Research Proposal", "category": "Proposal", "score": null, "possible": 100},
+        {"date": "2025-12-05", "name": "Progress Report 1", "category": "Progress Reports", "score": null, "possible": 50}
+      ]
+    }
+  ]
+}

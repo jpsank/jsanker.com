@@ -1,0 +1,66 @@
+{
+	frankenphp
+	order php_server before file_server
+	servers {
+		# Trust X-Forwarded-For only from private-range proxies (Fly, Docker, etc.)
+		trusted_proxies static private_ranges
+		# Drop connections that dribble headers or an upload body, so a few slow clients cannot tie up every PHP thread.
+		timeouts {
+			read_header 10s
+			read_body 30s
+		}
+	}
+}
+
+# SERVER_NAME=jsanker.com  -> automatic HTTPS for that host
+# (default)                -> plain HTTP on :80, for local development
+{$SERVER_NAME::80} {
+	root * /app/public
+	encode zstd gzip
+
+	request_body {
+		max_size 8MB
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		Cross-Origin-Opener-Policy same-origin-allow-popups
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+		-X-Powered-By
+	}
+
+	# Never serve dotfiles (except /.well-known for ACME etc.)
+	@dotfiles {
+		path */.*
+		not path /.well-known/*
+	}
+	respond @dotfiles 404
+
+	# Long-cache immutable-ish static assets
+	@static path *.css *.js *.svg *.png *.jpg *.jpeg *.gif *.webp *.ico *.woff2
+	header @static Cache-Control "public, max-age=3600"
+
+	# A .php URL that doesn't exist is a 404, not a PHP fatal
+	@missingphp {
+		path *.php
+		not file
+	}
+	error @missingphp 404
+
+	# Serve real files, or a directory's index.php; anything else is a real 404
+	# (no front-controller fallback to the home page).
+	php_server {
+		try_files {path} {path}/index.php
+	}
+
+	handle_errors {
+		rewrite * /error.php?code={err.status_code}
+		php_server {
+			try_files {path}
+		}
+	}
+}

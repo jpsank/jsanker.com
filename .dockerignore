@@ -1,0 +1,6 @@
+.git
+.env
+var
+node_modules
+**/.DS_Store
+tunnel.env

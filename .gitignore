@@ -1,9 +1,5 @@
-
 .DS_Store
-.idea/
-.venv/
-__pycache__/
-/old
-
-# Local Netlify folder
+.env
+/var/
 .netlify
+tunnel.env

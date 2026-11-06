@@ -1,0 +1,491 @@
+
+body {
+    margin: 25px 7vw;
+    padding: 0;
+    font-family: sans-serif;
+}
+
+
+div.jumbo {
+    text-align: center;
+    margin-left: auto;
+    margin-right: auto;
+    padding-bottom: 25px;
+}
+.title a {
+    text-decoration: none;
+    color: black;
+}
+.title h1 {
+    font-size: 4em;
+    margin: 0;
+    line-height: 1em;
+    border-bottom: 1px solid grey;
+    font-weight: normal;
+}
+.title p {
+    margin: 10px;
+}
+.title h1 span {
+    font-weight: bold;
+    font-family: serif;
+}
+.title h1 .A {
+    color: rgb(74, 172, 233);
+    font-size: 1.5em;
+}
+.title h1 .P {
+    color: rgb(161, 198, 97);
+    font-size: 1.5em;
+}
+.left {
+    padding-top: 10px;
+    padding-bottom: 5px;
+    font-size: .25em;
+}
+.left h1 {
+    padding-left: 10px;
+}
+
+
+div#main {
+    padding: 5px;
+}
+div.search_results {
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+}
+div.search_results div.result {
+    padding: 20px 0 5px 0;
+    display: flex;
+}
+.result a.topic, a.question, a.answer, a.comment {
+    margin: 0;
+}
+.result a.question::before, a.answer::before, a.comment::before {
+    content: "/";
+    padding: 0 10px;
+    color: black;
+    display: inline-block;
+    font-size: .8em;
+}
+div.topics_container {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+}
+div.topics_container div {
+    margin: 10px;
+    width: 220px;
+    text-align: center;
+    padding: 2px;
+}
+div.topics_container div a {
+    color: #07C;
+    text-decoration: none;
+}
+div.topics_container div a:hover {
+    color: #0AF;
+}
+div.topics_container div.inactive a {
+    color: grey;
+}
+div.topics_container div.inactive a:hover {
+    color: #555;
+}
+@media(max-width: 700px) {
+    div.topics_container {
+        justify-content: center;
+    }
+}
+
+.topic_header {
+    margin: 8px 0 0 0;
+    font-size: 1.75em;
+}
+div.topic {
+    padding: 1vw 0;
+}
+div.question {
+    padding: 5px 0;
+}
+div.question_details {
+    display: flex;
+    align-items: center;
+    border-top: 1px solid lightgrey;
+}
+div.question_details p {
+    padding: 5px;
+    margin: 5px;
+}
+div.question p.answers_count {
+     font-size: .75em;
+     text-align: center;
+ }
+div.question p.answers_count span {
+    font-size: 1.5em;
+    display: block;
+}
+div.question p.text a {
+    text-decoration: none;
+    color: #07C;
+}
+div.question p.text a:hover {
+    text-decoration: none;
+    color: #0AF;
+}
+div.question p.post_user {
+    font-size: .8em;
+}
+div.question p.post_user a {
+    text-decoration: none;
+    color: black;
+}
+div.question p.post_user a:hover {
+    text-decoration: underline;
+}
+.question_header p {
+    margin-bottom: 10px;
+    font-size: .9em;
+}
+.question_header p a {
+    color: black;
+    text-decoration: none;
+}
+.question_header p a:hover {
+    text-decoration: underline;
+}
+/*.question_header p a::after {*/
+/*    content: "/";*/
+/*    font-size: 1em;*/
+/*    padding-left: 5px;*/
+/*    display: inline-block;*/
+/*}*/
+div.question_title h1 {
+    margin-top: 0;
+    font-weight: normal;
+}
+.vote_container {
+    display: inline;
+    margin-right: 10px;
+    float: right;
+}
+div.question_details .vote_container {
+    float: none;
+    margin: 5px;
+    padding: 5px;
+    border-right: 1px solid lightgrey;
+}
+.vote_container form {
+    display: inline-flex;
+    align-items: baseline;
+    margin: 0;
+}
+.vote_container form input[type=submit] {
+    background-color: transparent;
+    padding: 0 7px 0 2px;
+    border: none;
+    cursor: pointer;
+    outline: none;
+    font-size: 1em;
+    color: lightgrey;
+}
+.vote_container form input[type=submit]:hover {
+    color: grey;
+}
+.vote_container.already form input[type=submit] {
+    color: green;
+}
+.vote_container.already form input[type=submit]:hover {
+    color: lightgreen;
+}
+.vote_container.no_login span {
+    color: rgba(0,0,0,.05);
+    text-decoration: none;
+}
+.questions_container {
+    padding-left: 1vw;
+}
+.num_questions {
+    padding: 10px 0;
+    border-bottom: 1px solid lightgrey;
+}
+.num_answers {
+    padding-bottom: 10px;
+    border-bottom: 1px solid lightgrey;
+}
+.answers_container ul {
+    border-bottom: 1px dashed lightgrey;
+    border-left: 1px solid lightgrey;
+    border-top: 1px solid lightgrey;
+    margin-bottom: 15px;
+    margin-left: 3vw;
+    padding-left: 5px;
+}
+div.post.answer {
+    padding: 10px 1vw 0 1vw;
+    margin-top: 10px;
+    font-size: 1.1em;
+    background-color: #fafafa;
+}
+div.post.answer p.text {
+    margin: 0 0 30px 0;
+}
+div.post.comment {
+    padding: 10px 1vw;
+}
+div.post.comment p.text {
+    margin: 0 0 3px 0;
+}
+div.post .post_user {
+    margin: 0 0 5px 0;
+    font-size: .8em;
+}
+div.post .post_user a {
+    color: grey;
+    text-decoration: none;
+}
+div.post .post_user a:hover {
+    text-decoration: underline;
+}
+
+p.login_link {
+    display: block;
+    padding: 5px;
+    margin: 0;
+}
+p.login_link a {
+    font-size: .8em;
+    text-decoration: none;
+    color: grey;
+}
+p.login_link:hover {
+    background-color: rgba(0,0,0,.025);
+}
+p.login_link a:hover {
+    text-decoration: underline;
+}
+
+
+form.submit {
+    display: inline-flex;
+    font-size: .8em;
+    margin: 0;
+}
+form.submit textarea {
+    resize: none;
+    height: 30px;
+    padding: 4px 0;
+    opacity: 1;
+    border: none;
+    outline: none;
+    cursor: pointer;
+    font-size: inherit;
+    background-color: transparent;
+}
+form.submit textarea:hover {
+    background-color: #fafafa;
+}
+form.submit.activated textarea {
+    background-color: white;
+}
+form.submit.activated textarea {
+    padding: 4px 8px;
+    border: 1px solid grey;
+    border-bottom: 1px dashed grey;
+    opacity: 1;
+    cursor: text;
+}
+form.submit input[type=submit] {
+    border: 0;
+    cursor: pointer;
+    width: 50px;
+    padding: 5px;
+    text-align: left;
+    display: none;
+}
+form.submit.activated input[type=submit] {
+    display: inline;
+}
+
+form.submit.block {
+    width: 100%;
+    flex-direction: column;
+}
+form.submit.block textarea {
+    width: 100%;
+}
+form.submit.block textarea[name=text] {
+    min-height: 25px;
+    opacity: 1;
+    font-size: 1.1em;
+}
+form.submit.block.activated textarea[name=text] {
+    padding: 8px;
+    min-height: 80px;
+}
+form.submit.block textarea[name=text]::placeholder {
+}
+
+
+form#search {
+     text-align: center;
+}
+form#search input {
+    padding: 4px 8px;
+}
+form#search input[type=text] {
+    width: auto;
+    border-radius: 5px;
+    border: 1px solid lightgrey;
+}
+form#search input[type=submit] {
+    border: 1px solid grey;
+    border-radius: 5px;
+    cursor: pointer;
+    outline: none;
+}
+form#search input[type=submit]:hover {
+    background-color: whitesmoke;
+}
+
+
+
+@-webkit-keyframes targetYellow {
+    0% {background-color: lightyellow;}
+    100% {background-color: white;}
+}
+div:target {
+    -webkit-animation-name: targetYellow;
+    -webkit-animation-duration: 2s;
+}
+
+
+form#login {
+
+}
+form#login label {
+    font-weight: bold;
+    font-size: .9em;
+}
+form#login input[type=text], form#login input[type=password] {
+    width: 300px;
+    display: block;
+    padding: 5px;
+    margin: 4px 0 10px 0;
+}
+form#login input#username {
+
+}
+form#login input#password {
+
+}
+form#login input[type=submit] {
+    border: 1px solid grey;
+    cursor: pointer;
+    padding: 5px 10px;
+    margin-bottom: 5px;
+}
+form#login input[type=submit]:hover {
+    background-color: whitesmoke;
+}
+
+.err_message {
+    color: red;
+}
+
+
+ul.nav {
+    list-style: none;
+    text-align: right;
+    font-size: .8em;
+    margin: 0;
+}
+ul.nav li a {
+    text-decoration: none;
+    color: grey;
+}
+ul.nav li a:hover {
+    text-decoration: underline;
+}
+
+div.user_post {
+    margin: 10px 0 0 0;
+    padding: 2px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+}
+.user_post a {
+    margin: 0;
+    font-size: .8em;
+}
+.user_post a:hover {
+    text-decoration: underline;
+}
+.user_post a.question::before, a.answer::before, a.comment::before {
+    content: "/";
+    padding: 0 5px;
+    color: black;
+    display: inline-block;
+    font-size: .8em;
+}
+.user_post a.final {
+    font-size: 1em;
+    width: 100%;
+    color: black;
+    text-decoration: none;
+    padding: 5px 0;
+}
+.user_post a.final:hover {
+    background-color: whitesmoke;
+}
+.user_post a.final::before {
+    content: "";
+    padding: 0;
+}
+.user_post.question {
+    border: 2px solid lightgrey;
+}
+.user_post.answer {
+    border: 1px solid lightgrey;
+}
+.user_post.comment {
+    border: 1px dashed lightgrey;
+}
+
+
+/* jsanker.com additions: logout and vote are POST forms, rendered like the original links/buttons */
+ul.nav li form.logout {
+    display: inline;
+    margin: 0;
+}
+ul.nav li form.logout button {
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: grey;
+    cursor: pointer;
+}
+ul.nav li form.logout button:hover {
+    text-decoration: underline;
+}
+
+/* The original page had no doctype (quirks mode), where <form> gets a bottom margin of 1em. */
+form#search, form#login {
+    margin-bottom: 1em;
+}
+/* Quirks-mode line-height: the original line box ignored the 16px strut around the small login link. */
+p.login_link {
+    font-size: .8em;
+}
+p.login_link a {
+    font-size: 1em;
+}
+/* Quirks mode made text fields and textareas border-box. */
+input[type=text], input[type=password], input[type=search], textarea {
+    box-sizing: border-box;
+}

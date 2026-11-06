@@ -1,0 +1,18 @@
+# Local development:  docker compose up --build   ->  http://localhost:8080
+services:
+  web:
+    build: .
+    ports:
+      - "8080:80"
+    environment:
+      SERVER_NAME: ":80"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./public:/app/public:ro
+      - ./src:/app/src:ro
+      - ./data:/app/data:ro
+      - appdata:/var/lib/jsanker
+volumes:
+  appdata:
