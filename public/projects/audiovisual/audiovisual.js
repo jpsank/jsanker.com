@@ -178,3 +178,27 @@ function sum(arr) {
 function touchStarted() {
   getAudioContext().resume()
 }
+
+// iOS mutes Web Audio (which p5.sound uses) while the ringer switch is on silent, unless the page counts as
+// "playback" media. navigator.audioSession does that on iOS 16.4+; older versions need a silent <audio> element
+// playing. Both must start inside a user gesture, so this runs on the first tap or click (e.g. on the file picker).
+let audioUnlocked = false;
+function unlockMobileAudio() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* unsupported */ }
+  try {
+    const n = 441, bytes = new Uint8Array(44 + n * 2), dv = new DataView(bytes.buffer);
+    const str = (o, t) => { for (let i = 0; i < t.length; i++) bytes[o + i] = t.charCodeAt(i); };
+    str(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt ');
+    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, 44100, true); dv.setUint32(28, 88200, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    str(36, 'data'); dv.setUint32(40, n * 2, true);
+    const el = new Audio(URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' })));
+    el.loop = true;
+    el.play().catch(() => { /* autoplay refused; Web Audio still works with the ringer on */ });
+  } catch (e) { /* ignore */ }
+}
+['touchend', 'click'].forEach((type) => {
+  document.addEventListener(type, unlockMobileAudio, { once: true, capture: true });
+});
