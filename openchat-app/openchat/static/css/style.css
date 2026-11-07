@@ -102,9 +102,23 @@ button.unlike-button { color: green; background-color: palegreen; }
 button.unlike-button:hover { color: red; background-color: ghostwhite; }
 .vote-button.upvote:hover i { color: green; }
 .vote-button.downvote:hover i { color: palevioletred; }
-button.nav-button { padding: 0; }
-.navbar-form { margin: 0; padding: 8px 15px 0; }
-.navbar-form .nav-button { color: #777; }
+/* the logout form sits in the navbar like any other link: same padding, line height and colour as `.navbar-nav > li > a` */
+.navbar-nav > li > form.navbar-form { margin: 0; padding: 0; border: 0; box-shadow: none; }
+.navbar-nav > li > form.navbar-form .nav-button {
+  display: block;
+  width: 100%;
+  padding: 10px 15px;
+  border: 0;
+  border-radius: 0;
+  line-height: 20px;
+  text-align: left;
+  color: #777;
+}
+.navbar-nav > li > form.navbar-form .nav-button:hover,
+.navbar-nav > li > form.navbar-form .nav-button:focus { color: #333; text-decoration: none; }
+@media (min-width: 768px) {
+  .navbar-nav > li > form.navbar-form .nav-button { padding-top: 15px; padding-bottom: 15px; }
+}
 
 /* user text keeps its line breaks without any HTML injection */
 .pre { white-space: pre-wrap; overflow-wrap: anywhere; }
