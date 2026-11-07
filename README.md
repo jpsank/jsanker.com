@@ -1,24 +1,25 @@
 # jsanker.com
 
-Julian Sanker's personal site: plain HTML/PHP, one stylesheet for the new pages, no build step, one container. The one exception to "all PHP" is OpenChat, a small Flask app that runs in the same container.
+Julian Sanker's personal site: plain HTML/PHP, one stylesheet for the new pages, no build step, one container. The exceptions to "all PHP" are OpenChat and ProTop's API, two small Flask apps that run in the same container.
 
 ## Layout
 
 ```
 public/            document root (the only thing the web server can see)
   index.php        home
-  projects/        ChemCalc, OpenChat Classic, APedia, Speedreed, WireWorld, Audiovisual + cut-down "souvenirs" (HHA Grades, uMusic, CoronaRiskMap, Lucas Gifs)
+  projects/        ChemCalc, OpenChat Classic, APedia, Speedreed, WireWorld, Audiovisual, Riboswitches (research write-up), ProTop (front end: plain PHP + ES modules) + cut-down "souvenirs" (HHA Grades, uMusic, CoronaRiskMap, Lucas Gifs)
   blog/            Firebase-backed blog (vanilla ES modules, no React)
   life/            life.js + life.css for the Game of Life on the home page (/life/ redirects home); api/pattern.php serves random RLE patterns
   photos/          photo page
   assets/site.css  the new minimalist design (system light/dark) for home, blog, photos
   assets/legacy/   the original puffyboa.xyz shared.css + favicon, used by the ported projects
 openchat-app/      OpenChat (the Flask app, served at /openchat/): see "OpenChat" below
+protop-app/        ProTop's API (Flask, served at /projects/protop/api/): see protop-app/README.md and API.md
 src/               shared PHP (bootstrap, layout, Censor, LegacyClean) and per-project server code — NOT web-accessible
 bin/               bin/migrate-legacy.php (one-off import of the 2019 databases), bin/backup.php (online backup)
 tests/             word-filter tests
 data/              read-only app data (Game of Life patterns, ChemCalc tables, Speedreed texts) — NOT web-accessible
-docker/            Caddyfile, php.ini, start.sh (entrypoint: web server + gunicorn)
+docker/            Caddyfile, php.ini, start.sh (entrypoint: web server + two gunicorns)
 firestore.rules    Firestore security rules for the blog (deploy with the Firebase CLI)
 scripts/smoke.sh   builds the image, boots it, checks routes and security headers
 scripts/backup.sh, scripts/restore.sh   production backup / restore of the data volume
@@ -44,7 +45,7 @@ publish ports 80/443 with an override and set `SERVER_NAME`. Netlify can't host 
 
 - Behind the tunnel leave `SERVER_NAME` unset (Cloudflare does the HTTPS). On a host that faces the internet
   directly, set `SERVER_NAME=jsanker.com` for Caddy's automatic HTTPS.
-- Mount a **persistent volume at `/var/lib/jsanker`** — SQLite databases (OpenChat Classic, APedia, OpenChat), sessions,
+- Mount a **persistent volume at `/var/lib/jsanker`** — SQLite databases (OpenChat Classic, APedia, OpenChat, ProTop), sessions,
   rate-limit state, and uploads live there. Also persist `/data` (Caddy's certificates).
 - Set the `FIREBASE_*` variables from `.env.example` for the blog.
 - Optional: `OPENCHAT_ALLOW_IMAGES=1` to allow image uploads on OpenChat Classic (off by default — it is an
@@ -143,6 +144,16 @@ What changed from the 2019-2020 original (Flask 1.1, Werkzeug 0.16, Flask-Upload
 There was no production database to bring over (the old puffyboa.xyz server is gone and only a 2020 test database
 survives), so OpenChat starts empty. Tests: `docker run --rm -v "$PWD/openchat-app":/src -w /src python:3.13-slim sh -c
 "pip install -q -r requirements.txt && python -m unittest discover -s tests"`.
+
+## ProTop
+
+A 2023 Yale CPSC 439/549 team project (Anna Su, Jason Apostol, Julian Sanker, Daniel Zuo, Lily Cai), re-hosted and finished.
+Pages are plain PHP under `public/projects/protop/` (search, catalog, workspace, flexibility; ES modules in `js/`); NGL 2.5.0 is vendored in
+`public/vendor/ngl/` (MIT). The API is `protop-app/` (see its README and `API.md`): a second gunicorn (one worker, four threads) on
+127.0.0.1:8001, proxied by Caddy at `/projects/protop/api/*`. Its data (rooms, op log, upstream cache) is `/var/lib/jsanker/protop/protop.sqlite3`.
+The knotted-protein catalog is a read-only snapshot in the image (`protop-app/protop/data/catalog.sqlite`, rebuilt with `python -m protop.build_catalog`).
+The server asks only RCSB, UniProt, AlphaKnot and KnotProt, over HTTPS, from a fixed allow-list; the browser asks no third party.
+Workspace rooms are unlisted links with no accounts; the room id stays in the URL hash.
 
 ## What was ported, and what wasn't
 

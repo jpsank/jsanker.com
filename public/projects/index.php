@@ -12,6 +12,7 @@ page_start([
 <h2>Research</h2>
 <ul class="plain">
   <li><a href="/projects/riboswitches/">Riboswitches</a> — can two sodium-binding RNA families be one model? Search results from my 2023 research at the Breaker Lab, and the story of the pipeline.</li>
+  <li><a href="/projects/protop/">ProTop</a> — a protein database aggregator, a catalog of knotted proteins, and a shared annotation and mutation workspace. A Yale CPSC 439/549 team project from 2023, finished here.</li>
 </ul>
 
 <h2>High school</h2>

@@ -51,9 +51,24 @@
 		}
 	}
 
+	# ProTop's API is a second Flask app in this container (see docker/start.sh); its pages are plain PHP under /projects/protop/.
+	# Response times are bounded by the upstream protein databases it asks, so allow a little longer than OpenChat.
+	handle /projects/protop/api/* {
+		reverse_proxy 127.0.0.1:8001 {
+			transport http {
+				response_header_timeout 40s
+			}
+		}
+	}
+
 	# Long-cache immutable-ish static assets
 	@static path *.css *.js *.svg *.png *.jpg *.jpeg *.gif *.webp *.ico *.woff2
 	header @static Cache-Control "public, max-age=3600"
+
+	# ProTop's ES modules import each other by plain path, so only the entry script is versioned;
+	# revalidate them (ETag) so a deploy never mixes new and old modules.
+	@protopjs path /projects/protop/js/*
+	header @protopjs Cache-Control "no-cache"
 
 	# A .php URL that doesn't exist is a 404, not a PHP fatal
 	@missingphp {

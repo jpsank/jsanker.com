@@ -6,6 +6,8 @@ node_modules
 tunnel.env
 
 openchat-app/tests
+protop-app/tests
+protop-app/var
 **/__pycache__
 **/*.pyc
 openchat-app/var
