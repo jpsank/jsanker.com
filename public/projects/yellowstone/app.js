@@ -2,6 +2,7 @@
 import { World } from './sim.js';
 import { createBrainPanel } from './brain.js';
 import { createGpu } from './gpu.js';
+import { LANDVIEW, landRgb } from './land.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 const $ = (id) => document.getElementById(id);
@@ -120,6 +121,7 @@ function animalColour(o) {
   else if (o.energy < 20) c = [c[0] + (255 - c[0]) * 0.5, c[1] + (255 - c[1]) * 0.5, c[2] + (255 - c[2]) * 0.5];
   return c;
 }
+const NIGHT = 0.7;   // how bright the picture stays at night (1 would be no change at all)
 const WOLVES = 320;   // how many the button releases: the 20 of the old 100 x 100 map, for sixteen times the ground (the label is set from this)
 
 async function init() {
@@ -145,27 +147,27 @@ async function init() {
   let world = null, running = false, redrawChart = null, redrawGrass = null, lastChart = 0, lastRate = { at: performance.now(), t: 0, sps: 0 };
 
   const mix = (dst, a, b, f) => { dst[0] = a[0] + (b[0] - a[0]) * f; dst[1] = a[1] + (b[1] - a[1]) * f; dst[2] = a[2] + (b[2] - a[2]) * f; };   // (dst may be a or b)
-  const EARTH = [222, 212, 186], GREEN = [52, 152, 84], WATER = [48, 112, 214], SOIL_N = [176, 96, 28], PALE = [236, 236, 230], SNOW = [250, 252, 255], COLD = [59, 130, 196], WARM = [235, 104, 52];
+  const EARTH = LANDVIEW.earth, GREEN = LANDVIEW.green, WATER = LANDVIEW.water, SOIL_N = [176, 96, 28], PALE = [236, 236, 230], SNOW = LANDVIEW.snow, COLD = [59, 130, 196], WARM = [235, 104, 52];
   const shown = [0, 0, 0];
 
   /** The ground under cell i for the chosen layer, written into `col`: shaded relief with grass and ponds on it, or one layer on its own. */
   function ground(i, layer, L, col) {
+    if (layer === 'land') { landRgb(L.elev[i], L.slope[i], L.grass[i], L.water[i], L.snow[i], col); return; }   // (the animals see this view: see World.look)
     const n = L.n, r = (i / n) | 0, c = i - r * n;
     const shade = 0.5 + 0.9 * (L.elev[i] - L.elev[Math.max(0, r - 1) * n + Math.max(0, c - 1)]);
     // the Height layer is lit from the north-west so the shape of the land reads; every other layer is lit by the sun where it really is
-    const lit = layer === 'elevation' ? 0.2 * shade : 0.8 * (L.light[i] - L.flat[r]);
+    const lit = layer === 'elevation' ? 0.2 * shade : 0.8 * L.slope[i];
     const relief = Math.max(0, Math.min(1.25, 0.55 + 0.05 * L.elev[i] + lit));
     col[0] = EARTH[0] * relief; col[1] = EARTH[1] * relief; col[2] = EARTH[2] * relief;
     if (layer === 'elevation') return;
-    if (layer === 'grass' || layer === 'land') mix(col, layer === 'grass' ? EARTH : col, GREEN, Math.min(0.95, L.grass[i] / 4));
-    if (layer === 'water' || layer === 'land') mix(col, layer === 'water' ? PALE : col, WATER, Math.min(layer === 'water' ? 0.9 : 0.8, L.water[i] / (layer === 'water' ? 2.5 : 1.8)));
+    if (layer === 'grass') mix(col, EARTH, GREEN, Math.min(0.95, L.grass[i] / 4));
+    if (layer === 'water') mix(col, PALE, WATER, Math.min(0.9, L.water[i] / 2.5));
     if (layer === 'nitrogen') mix(col, PALE, SOIL_N, Math.min(0.85, L.nitrogen[i] / 0.6));
     if (layer === 'temperature') {   // ground temperature: blue below freezing, pale at about 8 degrees, orange when warm
       const t = L.tempAt(i);
       if (t < 8) mix(col, PALE, COLD, Math.min(1, (8 - t) / 20)); else mix(col, PALE, WARM, Math.min(1, (t - 8) / 20));
     }
     if (layer === 'snow') mix(col, col, SNOW, Math.min(0.95, L.snow[i] / 0.8));
-    if (layer === 'land') mix(col, col, SNOW, Math.min(0.9, L.snow[i] / 0.8));   // snow lies over everything
   }
 
   // The ground changes slowly and the animals every step, so the ground is repainted every few steps (or when the layer changes) and only the animals each frame.
@@ -174,6 +176,7 @@ async function init() {
     const d = img.data, L = world.land, layer = layerIn.value, n = world.n;
     if (groundWorld !== world || groundLayer !== layer || world.t - groundAt >= 6 || world.t < groundAt) {
       if (!groundData || groundData.length !== d.length) groundData = new Uint8ClampedArray(d.length);
+      if (world.gpu) L.ensureLight(world.clim);   // (the card works out the light itself; the picture needs it here too)
       for (let i = 0, p = 0; i < n * n; i++, p += 4) {
         ground(i, layer, L, shown);
         groundData[p] = shown[0]; groundData[p + 1] = shown[1]; groundData[p + 2] = shown[2]; groundData[p + 3] = 255;
@@ -208,7 +211,7 @@ async function init() {
     }
     const gone = world.animals.size === 0 && world.t > 0;
     const w = world.when();
-    canvas.style.filter = `brightness(${(0.4 + 0.6 * world.sun).toFixed(2)})`;   // the world darkens at night
+    canvas.style.filter = `brightness(${(NIGHT + (1 - NIGHT) * world.sun).toFixed(2)})`;   // the world darkens at night, but not to black
     stat.textContent =
       `Step ${fmt(world.t)} · ${fmt(world.nPrey)} prey` + (world.nWolf || world.hunted ? ` · ${fmt(world.nWolf)} wolves` : '') + ` · ${fmt(world.history.grass.at(-1))} grass` +
       (running ? ` · ${lastRate.sps.toFixed(0)} steps/s` : '');

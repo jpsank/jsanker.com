@@ -7,7 +7,8 @@
 //                moment an animal is born, and kept there as 16-bit floats. Each step one workgroup per animal builds its 9 x 9 view, runs the network and picks its step.
 //
 // The arithmetic is the same as land.js and sim.js, in 32-bit floats instead of 64-bit, so a run is repeatable on the same machine and card but not identical to a CPU run.
-import { BRAIN, PROGRAM, encodeProgram, packNet, connectionTable } from './sim.js';
+import { BRAIN, PROGRAM, encodeProgram, packNet, connectionTable, VISION } from './sim.js';
+import { SHADOW_SOFT, SHADOW_REACH, LANDVIEW } from './land.js';
 
 const WG = 256;                 // threads per workgroup in the ground passes
 const SLOT_CAP = 200000;        // never more brains than this
@@ -21,16 +22,18 @@ const OFF = { w0: 0, b0: 0, w1: 0, b1: 0 };   // where each layer starts in a br
 /* ------------------------------------------------------------------ the ground */
 
 const LAND_FIELDS = [
-  ['n', 'u32'], ['size', 'u32'], ['raining', 'f32'], ['rainD', 'f32'], ['lag', 'f32'], ['conduct', 'f32'], ['sunWarm', 'f32'], ['heatGain', 'f32'],
+  ['n', 'u32'], ['size', 'u32'], ['raining', 'f32'], ['rainD', 'f32'], ['lag', 'f32'], ['conduct', 'f32'], ['heatGain', 'f32'], ['lapse', 'f32'], ['kOro', 'f32'], ['sunHeat', 'f32'], ['radCool', 'f32'], ['albedo', 'f32'], ['snowAlbedo', 'f32'], ['snowAlbedoDepth', 'f32'], ['invWs', 'f32'], ['retain', 'f32'], ['flowMin', 'f32'], ['soakMax', 'f32'], ['floodStart', 'f32'], ['floodEnd', 'f32'], ['nMobile', 'f32'],
   ['waterHeat', 'f32'], ['waterHeatMax', 'f32'], ['meltRate', 'f32'], ['deposit', 'f32'], ['evap', 'f32'], ['seep', 'f32'], ['floodSeep', 'f32'], ['seepMax', 'f32'],
-  ['flow', 'f32'], ['creep', 'f32'], ['leach', 'f32'], ['outletRate', 'f32'], ['regrow', 'f32'], ['gMax', 'f32'], ['waterPer', 'f32'], ['nPer', 'f32'],
+  ['flow', 'f32'], ['creep', 'f32'], ['leach', 'f32'], ['outletRate', 'f32'], ['regrow', 'f32'], ['gMax', 'f32'], ['waterPer', 'f32'], ['nPer', 'f32'], ['shadows', 'f32'], ['cellRun', 'f32'], ['skyMax', 'f32'],
 ];
 const PARAM_BYTES = LAND_FIELDS.length * 4;
-const ROWS = 1024;   // vec4s in the per-row table: two for every row (so maps up to 512 rows)
+const ROWS = 1536;   // vec4s in the row table: two for every row, then one for every column (so maps up to 512 across)
 
 // state: A = (grass, water, snow, ground temperature) and B = nitrogen, per cell, each kept twice (ping-pong) for the passes that read neighbours.
-// stat = per cell two vec4s: (height, chill, is-outlet, 0) and the slope normal (east, north, up, 0).
-// rows = per row two vec4s: (sun up, east, north, flat-ground light) and (air temperature, rain share, 0, 0).
+// stat = per cell two vec4s: (height, km above the map's average height, is-outlet, the height the sun sees) and the slope normal (east, north, up, 0).
+// rows = per row two vec4s: (sun up, east, north, flat-ground light on the middle meridian) and (air temperature, rain share, sin and cos of the latitude); then per column one vec4:
+//   (cos of the declination x cos of the hour angle there, minus cos of the declination x sin of it, sin of the declination, 0). The sun's place at a cell comes from the two.
+// stat.w of a cell's first vec4 = the height the sun sees there (the lakes' surface, not their bed), for the shadows.
 const PRELUDE = /* wgsl */ `
 struct Params { ${LAND_FIELDS.map(([k, t]) => `${k}: ${t},`).join(' ')} }
 @group(0) @binding(0) var<uniform> P: Params;
@@ -49,12 +52,6 @@ fn wgSum(t: u32, v: f32) -> f32 {
   return total;
 }
 fn cap(w: f32) -> f32 { return 1.0 + P.waterHeat * min(P.waterHeatMax, w); }
-fn lightAt(r: u32, nm: vec4<f32>) -> f32 {
-  let rw = rows[2u * r];
-  if (rw.x <= 0.0) { return 0.0; }
-  let d = nm.x * rw.y + nm.y * rw.z + nm.z * rw.x;
-  return 0.9 * max(d, 0.0) + 0.1 * rw.x;
-}
 fn nbr(i: u32, d: u32) -> u32 {
   let n = P.n;
   let r = i / n;
@@ -67,9 +64,29 @@ fn nbr(i: u32, d: u32) -> u32 {
 fn moisture(w: f32) -> f32 {
   if (w <= 0.05) { return 0.0; }
   if (w < 0.3) { return (w - 0.05) / 0.25; }
-  if (w <= 1.5) { return 1.0; }
-  if (w < 2.5) { return 2.5 - w; }
+  if (w <= P.floodStart) { return 1.0; }
+  if (w < P.floodEnd) { return (P.floodEnd - w) / (P.floodEnd - P.floodStart); }
   return 0.0;
+}
+// the eight neighbours: up, right, down, left, up-left, up-right, down-right, down-left (a cell on the map's edge is its own neighbour there)
+fn nbr8(i: u32, d: u32) -> u32 {
+  let n = i32(P.n);
+  let r = i32(i / P.n);
+  let c = i32(i % P.n);
+  var dr = 0;
+  var dc = 0;
+  if (d == 0u) { dr = -1; }
+  if (d == 1u) { dc = 1; }
+  if (d == 2u) { dr = 1; }
+  if (d == 3u) { dc = -1; }
+  if (d == 4u) { dr = -1; dc = -1; }
+  if (d == 5u) { dr = -1; dc = 1; }
+  if (d == 6u) { dr = 1; dc = 1; }
+  if (d == 7u) { dr = 1; dc = -1; }
+  let rr = r + dr;
+  let cc = c + dc;
+  if (rr < 0 || rr >= n || cc < 0 || cc >= n) { return i; }
+  return u32(rr * n + cc);
 }
 `;
 
@@ -91,11 +108,56 @@ ${MAIN} {
   sB[i] = sB[i] + d.y;
 }`;
 
+// the sunlight on every cell: the beam by how squarely the slope faces the sun where that cell is, unless a hill's skyline is higher than the sun, plus a little skylight (see Land.sunlight)
+const LIGHT = /* wgsl */ `
+@group(0) @binding(2) var<storage, read> stat: array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read_write> lightOut: array<f32>;
+${MAIN} {
+  let i = g.x;
+  if (i >= P.size) { return; }
+  let n = P.n;
+  let r = i / n;
+  let c = i - r * n;
+  let rw2 = rows[2u * r + 1u];
+  let col = rows[2u * n + c];
+  let sp = rw2.z;
+  let cp = rw2.w;
+  let u = sp * col.z + cp * col.x;
+  if (u <= 0.0) { lightOut[i] = 0.0; lightOut[P.size + i] = 0.0; return; }
+  let e = col.y;
+  let no = col.z * cp - sp * col.x;
+  let nm = stat[2u * i + 1u];
+  var beam = max(nm.x * e + nm.y * no + nm.z * u, 0.0);
+  if (P.shadows > 0.5 && beam > 0.0) {
+    let hh = sqrt(e * e + no * no);
+    let dx = e / hh;
+    let dy = -no / hh;
+    let h0 = stat[2u * i].w;
+    let rise = (P.skyMax - h0) / P.cellRun;
+    var best = 0.0;
+    for (var s = 1; s <= ${SHADOW_REACH}; s = s + 1) {
+      let fs = f32(s);
+      if (rise <= best * fs) { break; }
+      let rr = i32(floor(f32(r) + dy * fs + 0.5));
+      let cc = i32(floor(f32(c) + dx * fs + 0.5));
+      if (rr < 0 || rr >= i32(n) || cc < 0 || cc >= i32(n)) { break; }
+      let t = (stat[2u * (u32(rr) * n + u32(cc))].w - h0) / (fs * P.cellRun);
+      best = max(best, t);
+    }
+    let x = clamp((u - best / sqrt(1.0 + best * best)) / ${SHADOW_SOFT} + 0.5, 0.0, 1.0);
+    beam = beam * x * x * (3.0 - 2.0 * x);
+  }
+  let lit = 0.9 * beam + 0.1 * u;
+  lightOut[i] = lit;
+  lightOut[P.size + i] = lit - u;   // (the second half of the buffer: the light minus what flat ground there gets, the slope's share of the land view's shading)
+}`;
+
 // ground temperature: closes in on the air, and on the cells around it
 const SOIL = /* wgsl */ `
 @group(0) @binding(2) var<storage, read> sA: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> oA: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read> stat: array<vec4<f32>>;
+@group(0) @binding(5) var<storage, read> lightIn: array<f32>;
 ${MAIN} {
   let i = g.x;
   if (i >= P.size) { return; }
@@ -112,9 +174,10 @@ ${MAIN} {
   let c0 = select(c, c - 1u, c > 0u);
   let c1 = select(c, c + 1u, c + 1u < n);
   let around = sA[r0 * n + c0].w + sA[r0 * n + c].w + sA[r0 * n + c1].w + sA[r * n + c0].w + sA[r * n + c1].w + sA[r1 * n + c0].w + sA[r1 * n + c].w + sA[r1 * n + c1].w;
-  let light = lightAt(r, nm);
+  let light = lightIn[i];
   let s = a.w;
-  let T = s + (P.lag * (rw2.x - st.y + P.sunWarm * (light - rw.w) - s) + P.conduct / 8.0 * around - P.conduct * s) / cap(a.y);
+  let alb = P.albedo + (P.snowAlbedo - P.albedo) * min(1.0, a.z / P.snowAlbedoDepth);
+  let T = s + (P.lag * (rw2.x - P.lapse * st.y + P.sunHeat * (1.0 - alb) * light - P.radCool - s) + P.conduct / 8.0 * around - P.conduct * s) / cap(a.y);
   oA[i] = vec4<f32>(a.x, a.y, a.z, T);
 }`;
 
@@ -124,6 +187,7 @@ const WEATHER = /* wgsl */ `
 @group(0) @binding(3) var<storage, read_write> sB: array<f32>;
 @group(0) @binding(4) var<storage, read> stat: array<vec4<f32>>;
 @group(0) @binding(5) var<storage, read_write> acc: array<f32>;
+@group(0) @binding(6) var<storage, read> lightIn: array<f32>;
 ${MAIN} {
   let i = g.x;
   var evapped = 0.0;
@@ -137,9 +201,9 @@ ${MAIN} {
     var w = a.y;
     var sn = a.z;
     var nn = sB[i];
-    let air = rw2.x - st.y;
+    let air = rw2.x - P.lapse * st.y;
     if (P.raining > 0.5) {
-      let d = P.rainD * rw2.y;
+      let d = P.rainD * rw2.y * max(0.1, 1.0 + P.kOro * st.y);
       if (air < 1.0) { sn = sn + d; } else { w = w + d; }
     }
     if (sn > 0.0 && a.w > 0.0) {
@@ -148,13 +212,13 @@ ${MAIN} {
       w = w + m;
     }
     nn = nn + P.deposit;
-    let light = lightAt(r, nm);
+    let light = lightIn[i];
     let e = P.evap * (0.25 + 0.75 * light);
     let warm = 0.6 + 0.4 * min(1.5, max(0.0, air / 15.0));
     let x = min(w, e * warm);
     w = w - x;
     evapped = x;
-    let y = min(min(w * P.seep + P.floodSeep * max(0.0, w - 1.5), P.seepMax), w);
+    let y = min(min(min(w, P.soakMax) * P.seep + P.floodSeep * max(0.0, w - 1.5), P.seepMax), w);
     w = w - y;
     seeped = y;
     a.y = w;
@@ -167,56 +231,74 @@ ${MAIN} {
   if (t == 0u) { acc[wg.x * 8u] = acc[wg.x * 8u] + te; acc[wg.x * 8u + 1u] = acc[wg.x * 8u + 1u] + ts; }
 }`;
 
-// water runs to lower neighbours: first how much leaves each cell in each direction...
+// water runs to lower neighbours: first how much leaves each cell in each of eight directions (the drop in water surface, in units of water, times a share, and never more than
+// this cell has above the first `flowMin` of its water, which stays put)...
 const FLUX = /* wgsl */ `
 @group(0) @binding(2) var<storage, read> sA: array<vec4<f32>>;
-@group(0) @binding(3) var<storage, read_write> flux: array<vec4<f32>>;
-@group(0) @binding(4) var<storage, read> stat: array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read_write> fluxA: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read_write> fluxB: array<vec4<f32>>;
+@group(0) @binding(5) var<storage, read> stat: array<vec4<f32>>;
 ${MAIN} {
   let i = g.x;
   if (i >= P.size) { return; }
   let w = sA[i].y;
-  var f = vec4<f32>(0.0);
-  if (w > 0.0) {
-    let s = stat[2u * i].x + w;
-    for (var d = 0u; d < 4u; d = d + 1u) {
-      let j = nbr(i, d);
-      let diff = s - (stat[2u * j].x + sA[j].y);
-      if (diff > 0.0) { f[d] = P.flow * diff; }
+  var fa = vec4<f32>(0.0);
+  var fb = vec4<f32>(0.0);
+  if (w > P.flowMin && w > 0.0) {
+    let e = stat[2u * i].x;
+    var total = 0.0;
+    for (var d = 0u; d < 8u; d = d + 1u) {
+      let j = nbr8(i, d);
+      let diff = (e - stat[2u * j].x) * P.invWs + (w - sA[j].y);
+      var f = 0.0;
+      if (diff > 0.0) { f = P.flow * diff * select(1.0, 0.70710678, d >= 4u); }
+      if (d < 4u) { fa[d] = f; } else { fb[d - 4u] = f; }
+      total = total + f;
     }
-    let total = f.x + f.y + f.z + f.w;
-    if (total > 0.0) { f = f * select(1.0, w / total, total > w); } else { f = vec4<f32>(0.0); }
+    let room = w - P.flowMin;
+    let scale = select(1.0, room / total, total > room);
+    if (total > 0.0 && total * scale > 0.0) { fa = fa * scale; fb = fb * scale; } else { fa = vec4<f32>(0.0); fb = vec4<f32>(0.0); }
   }
-  flux[i] = f;
+  fluxA[i] = fa;
+  fluxB[i] = fb;
 }`;
 
-// ...then each cell loses what it sends and gains what its neighbours send, nitrogen riding along with the water
+// ...then each cell loses what it sends and gains what its neighbours send it (a neighbour in direction d sends to this cell in the opposite direction), nitrogen riding along with the water
 const GATHER = /* wgsl */ `
 @group(0) @binding(2) var<storage, read> sA: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read> sB: array<f32>;
 @group(0) @binding(4) var<storage, read_write> oA: array<vec4<f32>>;
 @group(0) @binding(5) var<storage, read_write> oB: array<f32>;
-@group(0) @binding(6) var<storage, read> flux: array<vec4<f32>>;
+@group(0) @binding(6) var<storage, read> fluxA: array<vec4<f32>>;
+@group(0) @binding(7) var<storage, read> fluxB: array<vec4<f32>>;
 ${MAIN} {
   let i = g.x;
   if (i >= P.size) { return; }
-  let n = P.n;
-  let r = i / n;
-  let c = i - r * n;
   var a = sA[i];
   let w = a.y;
   let nit = sB[i];
-  let fo = flux[i];
-  let outW = fo.x + fo.y + fo.z + fo.w;
+  let fo = fluxA[i];
+  let fp = fluxB[i];
+  let outW = fo.x + fo.y + fo.z + fo.w + fp.x + fp.y + fp.z + fp.w;
   var inW = 0.0;
   var inN = 0.0;
-  if (r > 0u) { let j = i - n; let f = flux[j].z; if (f > 0.0) { inW = inW + f; inN = inN + f * sB[j] / sA[j].y; } }
-  if (r + 1u < n) { let j = i + n; let f = flux[j].x; if (f > 0.0) { inW = inW + f; inN = inN + f * sB[j] / sA[j].y; } }
-  if (c > 0u) { let j = i - 1u; let f = flux[j].y; if (f > 0.0) { inW = inW + f; inN = inN + f * sB[j] / sA[j].y; } }
-  if (c + 1u < n) { let j = i + 1u; let f = flux[j].w; if (f > 0.0) { inW = inW + f; inN = inN + f * sB[j] / sA[j].y; } }
+  for (var d = 0u; d < 8u; d = d + 1u) {
+    let j = nbr8(i, d);
+    if (j == i) { continue; }
+    // the neighbour at direction d sends to this cell along the opposite direction
+    var o = d + 2u;
+    if (d == 2u || d == 3u) { o = d - 2u; }
+    if (d == 4u) { o = 6u; }
+    if (d == 5u) { o = 7u; }
+    if (d == 6u) { o = 4u; }
+    if (d == 7u) { o = 5u; }
+    var f = 0.0;
+    if (o < 4u) { let v = fluxA[j]; f = v[o]; } else { let v = fluxB[j]; f = v[o - 4u]; }
+    if (f > 0.0) { inW = inW + f; inN = inN + f * P.nMobile * sB[j] / sA[j].y; }
+  }
   a.y = max(0.0, w - outW + inW);
   var nn = nit + inN;
-  if (w > 0.0) { nn = nn - nit * (outW / w); }
+  if (w > 0.0) { nn = nn - nit * P.nMobile * (outW / w); }
   oA[i] = a;
   oB[i] = max(0.0, nn);
 }`;
@@ -270,6 +352,7 @@ const GROW = /* wgsl */ `
 @group(0) @binding(6) var<storage, read> stat: array<vec4<f32>>;
 @group(0) @binding(7) var<storage, read> dl: array<vec4<f32>>;
 @group(0) @binding(8) var<storage, read_write> acc: array<f32>;
+@group(0) @binding(9) var<storage, read> lightIn: array<f32>;
 ${MAIN} {
   let i = g.x;
   var drunk = 0.0;
@@ -287,7 +370,7 @@ ${MAIN} {
     if (dl[i].w < 0.5 && a.z <= 0.02) {
       let nb = (sA[nbr(i, 0u)].x + sA[nbr(i, 1u)].x + sA[nbr(i, 2u)].x + sA[nbr(i, 3u)].x) / 4.0;
       let base = g0 + 0.5 * nb + 0.002;
-      let light = lightAt(r, stat[2u * i + 1u]) * clamp(tl / 12.0, 0.0, 1.0);
+      let light = lightIn[i] * clamp(tl / 12.0, 0.0, 1.0);
       var grow = P.regrow * light * m * (nit / (nit + 0.03)) * base * (1.0 - g0 / P.gMax);
       grow = min(grow, min(w / P.waterPer, nit / P.nPer));
       if (grow > 0.0) {
@@ -309,7 +392,7 @@ ${MAIN} {
 /* ------------------------------------------------------------------ the brains */
 
 const BRAIN_WGSL = /* wgsl */ `
-struct BP { count: u32, n: u32, a: u32, b: u32, climb: f32, wade: f32, snowCost: f32, snowCap: f32 }
+struct BP { count: u32, n: u32, a: u32, b: u32, climb: f32, swim: f32, snowCost: f32, snowCap: f32, swimDepth: f32 }
 @group(0) @binding(0) var<uniform> bp: BP;
 @group(0) @binding(1) var<uniform> rows: array<vec4<f32>, ${ROWS}>;
 @group(0) @binding(2) var<storage, read> an: array<vec4<u32>>;
@@ -318,8 +401,18 @@ struct BP { count: u32, n: u32, a: u32, b: u32, climb: f32, wade: f32, snowCost:
 @group(0) @binding(5) var<storage, read> stat: array<vec4<f32>>;
 @group(0) @binding(6) var<storage, read> wts: array<u32>;
 @group(0) @binding(7) var<storage, read_write> res: array<u32>;
+@group(0) @binding(8) var<storage, read> lightIn: array<f32>;
 
 const GREY: f32 = 0.0019607843;
+// the ground as the land view shows it (see landRgb in land.js)
+fn landColour(height: f32, slope: f32, grass: f32, water: f32, snow: f32) -> vec3<f32> {
+  let relief = clamp(0.55 + ${LANDVIEW.heightGain} * height + ${LANDVIEW.slopeGain} * slope, 0.0, ${LANDVIEW.reliefMax});
+  var c = vec3<f32>(${LANDVIEW.earth.join(',')}) * relief;
+  c = c + (vec3<f32>(${LANDVIEW.green.join(',')}) - c) * min(${LANDVIEW.grassMax}, grass / ${LANDVIEW.grassFull}.0);
+  c = c + (vec3<f32>(${LANDVIEW.water.join(',')}) - c) * min(${LANDVIEW.waterMax}, water / ${LANDVIEW.waterFull});
+  c = c + (vec3<f32>(${LANDVIEW.snow.join(',')}) - c) * min(${LANDVIEW.snowMax}, snow / ${LANDVIEW.snowFull});
+  return min(c, vec3<f32>(255.0)) / 255.0 - vec3<f32>(0.5);
+}
 const WORDS: u32 = ${BRAIN.words}u;
 var<workgroup> inp: array<f32, 243>;
 var<workgroup> h1: array<f32, 27>;
@@ -342,7 +435,6 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
   let pos = rec.y;
   let r = i32(pos / n);
   let c = i32(pos % n);
-  let far = 0.6 + 0.4 * rows[2u * u32(r)].w;
 
   // what it sees: 9 x 9 cells, three numbers each
   if (canAct) {
@@ -352,18 +444,21 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
       let rr = r + ci - 4;
       let cc = c + cj - 4;
       var col = vec3<f32>(-0.5, -0.5, -0.5);
+      var lit = lightIn[pos];   // (past the edge of the map: the light where it stands)
       if (rr >= 0 && rr < ni && cc >= 0 && cc < ni) {
+        lit = lightIn[u32(rr) * n + u32(cc)];
         let who = cell[u32(rr) * n + u32(cc)];
         if (who != 0u) {
           let o = an[who - 1u];
           col = vec3<f32>(0.5, bitcast<f32>(o.z), bitcast<f32>(o.w));
         } else {
-          let gr = min(1.0, sA[u32(rr) * n + u32(cc)].x / 4.0);
-          col = vec3<f32>(GREY, GREY, GREY) + (vec3<f32>(-0.5, 0.5, -0.5) - vec3<f32>(GREY, GREY, GREY)) * gr;
+          let k2 = u32(rr) * n + u32(cc);
+          let g4 = sA[k2];
+          col = landColour(stat[2u * k2].x, lightIn[n * n + k2], g4.x, g4.y, g4.z);
         }
       }
-      let f = select(far, 1.0, abs(ci - 4) <= 1 && abs(cj - 4) <= 1);
-      let o3 = vec3<f32>(GREY, GREY, GREY) + (col - vec3<f32>(GREY, GREY, GREY)) * f;
+      let clarity = ${VISION.floor} + (1.0 - ${VISION.floor}) * (1.0 - exp(-lit / ${VISION.half}));   // (how well it sees this cell by the sun on it)
+      let o3 = vec3<f32>(GREY, GREY, GREY) + (col - vec3<f32>(GREY, GREY, GREY)) * clarity;
       inp[k * 3u] = o3.x;
       inp[k * 3u + 1u] = o3.y;
       inp[k * 3u + 2u] = o3.z;
@@ -401,7 +496,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
         if (rr < 0 || rr >= ni || cc < 0 || cc >= ni) { continue; }
         let j = u32(rr) * n + u32(cc);
         let land = sA[j];
-        let cost = 0.05 + 0.1 * f32(abs(di) + abs(dj)) / 2.0 + bp.climb * max(0.0, stat[2u * j].x - here) + bp.wade * min(3.0, land.y) + bp.snowCost * min(bp.snowCap, land.z);
+        let cost = 0.05 + 0.1 * f32(abs(di) + abs(dj)) / 2.0 + bp.climb * max(0.0, stat[2u * j].x - here) + bp.swim * min(1.0, land.y / bp.swimDepth) + select(0.0, bp.snowCost * min(bp.snowCap, land.z), di != 0 || dj != 0);
         let v = ov[k * 2u] - log(cost);
         if (v > bv) { bv = v; best = k; }
       }
@@ -427,7 +522,7 @@ fn main(@builtin(global_invocation_id) g: vec3<u32>) {
 }`;
 
 const SCATTER = /* wgsl */ `
-struct BP { count: u32, n: u32, a: u32, b: u32, climb: f32, wade: f32, snowCost: f32, snowCap: f32 }
+struct BP { count: u32, n: u32, a: u32, b: u32, climb: f32, swim: f32, snowCost: f32, snowCap: f32, swimDepth: f32 }
 @group(0) @binding(0) var<uniform> bp: BP;
 @group(0) @binding(2) var<storage, read> an: array<vec4<u32>>;
 @group(0) @binding(3) var<storage, read_write> cell: array<u32>;
@@ -523,13 +618,14 @@ class Gpu {
     const U2 = { 0: 'u', 1: 'u' };
     this.pass = {
       apply: await make('apply', PRELUDE + APPLY, { ...U2, 2: 'w', 3: 'w', 4: 'r' }),
-      soil: await make('soil', PRELUDE + SOIL, { ...U2, 2: 'r', 3: 'w', 4: 'r' }),
-      weather: await make('weather', PRELUDE + WEATHER, { ...U2, 2: 'w', 3: 'w', 4: 'r', 5: 'w' }),
-      flux: await make('flux', PRELUDE + FLUX, { ...U2, 2: 'r', 3: 'w', 4: 'r' }),
-      gather: await make('gather', PRELUDE + GATHER, { ...U2, 2: 'r', 3: 'r', 4: 'w', 5: 'w', 6: 'r' }),
+      light: await make('light', PRELUDE + LIGHT, { ...U2, 2: 'r', 3: 'w' }),
+      soil: await make('soil', PRELUDE + SOIL, { ...U2, 2: 'r', 3: 'w', 4: 'r', 5: 'r' }),
+      weather: await make('weather', PRELUDE + WEATHER, { ...U2, 2: 'w', 3: 'w', 4: 'r', 5: 'w', 6: 'r' }),
+      flux: await make('flux', PRELUDE + FLUX, { ...U2, 2: 'r', 3: 'w', 4: 'w', 5: 'r' }),
+      gather: await make('gather', PRELUDE + GATHER, { ...U2, 2: 'r', 3: 'r', 4: 'w', 5: 'w', 6: 'r', 7: 'r' }),
       creep: await make('creep', PRELUDE + CREEP, { ...U2, 2: 'r', 3: 'r', 4: 'w', 5: 'w', 6: 'r', 7: 'w' }),
-      grow: await make('grow', PRELUDE + GROW, { ...U2, 2: 'r', 3: 'r', 4: 'w', 5: 'w', 6: 'r', 7: 'r', 8: 'w' }),
-      brain: await make('brain', BRAIN_WGSL, { 0: 'u', 1: 'u', 2: 'r', 3: 'r', 4: 'r', 5: 'r', 6: 'r', 7: 'w' }),
+      grow: await make('grow', PRELUDE + GROW, { ...U2, 2: 'r', 3: 'r', 4: 'w', 5: 'w', 6: 'r', 7: 'r', 8: 'w', 9: 'r' }),
+      brain: await make('brain', BRAIN_WGSL, { 0: 'u', 1: 'u', 2: 'r', 3: 'r', 4: 'r', 5: 'r', 6: 'r', 7: 'w', 8: 'r' }),
       scatter: await make('scatter', SCATTER, { 0: 'u', 2: 'r', 3: 'w' }),
       deltas: await make('deltas', DELTAS, { 0: 'u', 2: 'r', 3: 'r', 4: 'w' }),
       cppn: await make('cppn', CPPN_WGSL, { 0: 'u', 2: 'r', 3: 'r', 4: 'r', 5: 'w' }),
@@ -551,7 +647,7 @@ class GpuSim {
     this.g = g;
     this.w = world;
     const L = (this.L = world.land);
-    if (2 * L.n > ROWS) throw new Error('the map is too big for the GPU row table');
+    if (3 * L.n > ROWS) throw new Error('the map is too big for the GPU row table');
     const n = (this.n = L.n), size = (this.size = n * n);
     this.groups = Math.ceil(size / WG);
     L.dev = this;   // the ground now collects the animals' effects as deltas
@@ -566,8 +662,10 @@ class GpuSim {
     this.B = [buf(size * 4, STORE, 'B0'), buf(size * 4, STORE, 'B1')];
     this.pa = 0; this.pb = 0;
     this.stat = buf(size * 32, STORE, 'stat');
+    this.lightBuf = buf(size * 8, STORE, 'light');
     this.dlBuf = buf(size * 16, STORE, 'deltas');
-    this.flux = buf(size * 16, STORE, 'flux');
+    this.fluxA = buf(size * 16, STORE, 'fluxA');
+    this.fluxB = buf(size * 16, STORE, 'fluxB');
     this.acc = buf(this.groups * 8 * 4, STORE, 'ledger');
     d.queue.writeBuffer(this.acc, 0, new Float32Array(this.groups * 8));
     this.P = buf(PARAM_BYTES, UNI, 'params');
@@ -582,7 +680,7 @@ class GpuSim {
     // the things that never change: height, how much colder than the valley floor, outlet, and the slope normal
     const st = new Float32Array(size * 8);
     for (let i = 0; i < size; i++) {
-      st[8 * i] = L.elev[i]; st[8 * i + 1] = L.chill[i]; st[8 * i + 2] = L.outlet[i];
+      st[8 * i] = L.elev[i]; st[8 * i + 1] = L.hKm[i]; st[8 * i + 2] = L.outlet[i]; st[8 * i + 3] = L.skyH ? L.skyH[i] : 0;
       st[8 * i + 4] = L.nE[i]; st[8 * i + 5] = L.nN[i]; st[8 * i + 6] = L.nU[i];
     }
     d.queue.writeBuffer(this.stat, 0, st);
@@ -594,7 +692,7 @@ class GpuSim {
     this.pending = [];
     this.anCap = 0;
     this.progCap = 0;
-    this.BP = buf(32, UNI, 'brain params');
+    this.BP = buf(48, UNI, 'brain params');
     this.DP = buf(16, UNI, 'delta params');
     this.tCap = 0;
     this.CP = buf(16, UNI, 'cppn params');
@@ -675,15 +773,16 @@ class GpuSim {
     }
 
     // parameters and the row table
-    const pd = this.paramData, vals = { n, size, raining: L.raining ? 1 : 0, rainD: L.rainDepth * w.clim.wet, lag: L.soilLag, conduct: L.soilConduct, sunWarm: L.sunWarm, heatGain: L.heatGain, waterHeat: L.waterHeat, waterHeatMax: L.waterHeatMax, meltRate: L.meltRate, deposit: L.deposit, evap: L.evap, seep: L.seep, floodSeep: L.floodSeep, seepMax: L.seepMax, flow: L.flow, creep: L.creep, leach: L.leach, outletRate: L.outletRate, regrow: L.regrow, gMax: L.gMax, waterPer: L.waterPer, nPer: L.nPer };
+    const pd = this.paramData, vals = { n, size, raining: L.raining ? 1 : 0, rainD: L.rainDepth * w.clim.wet, lag: L.soilLag, conduct: L.soilConduct, heatGain: L.heatGain, lapse: w.clim.lapse, kOro: w.clim.kOro, sunHeat: L.sunHeat, radCool: L.radCool, albedo: L.albedo, snowAlbedo: L.snowAlbedo, snowAlbedoDepth: L.snowAlbedoDepth, invWs: L.invWs, retain: L.retain, flowMin: L.flowMin, soakMax: Math.min(L.soakMax, 1e30), floodStart: L.floodStart, floodEnd: L.floodEnd, nMobile: L.nMobile, waterHeat: L.waterHeat, waterHeatMax: L.waterHeatMax, meltRate: L.meltRate, deposit: L.deposit, evap: L.evap, seep: L.seep, floodSeep: L.floodSeep, seepMax: L.seepMax, flow: L.flow, creep: L.creep, leach: L.leach, outletRate: L.outletRate, regrow: L.regrow, gMax: L.gMax, waterPer: L.waterPer, nPer: L.nPer, shadows: L.skyH ? 1 : 0, cellRun: L.run, skyMax: L.skyMax ?? 0 };
     LAND_FIELDS.forEach(([k, t], i) => (t === 'u32' ? pd.setUint32(i * 4, vals[k], true) : pd.setFloat32(i * 4, vals[k], true)));
     q.writeBuffer(this.P, 0, pd);
     const rd = this.rowData, c = w.clim;
     for (let r = 0; r < n; r++) {
       const o = r * 8;
-      rd[o] = c.up[r]; rd[o + 1] = c.east[r]; rd[o + 2] = c.north[r]; rd[o + 3] = c.sun[r]; rd[o + 4] = c.temp[r]; rd[o + 5] = c.rain[r];
+      rd[o] = c.up[r]; rd[o + 1] = c.east[r]; rd[o + 2] = c.north[r]; rd[o + 3] = c.sun[r]; rd[o + 4] = c.temp[r]; rd[o + 5] = c.rain[r]; rd[o + 6] = c.sinLat[r]; rd[o + 7] = c.cosLat[r];
     }
-    q.writeBuffer(this.rows, 0, rd, 0, n * 8);
+    for (let k = 0; k < n; k++) { const o = 8 * n + 4 * k; rd[o] = L.colA[k]; rd[o + 1] = L.colB[k]; rd[o + 2] = c.sd; rd[o + 3] = 0; }
+    q.writeBuffer(this.rows, 0, rd, 0, n * 12);
 
     // what the animals did to the ground, and where they stand
     for (const a of list) L.delta(a.r * n + a.c, 3, 1);
@@ -716,8 +815,8 @@ class GpuSim {
       af[4 * k + 2] = a.col[1]; af[4 * k + 3] = a.col[2];
     }
     if (count) q.writeBuffer(this.an, 0, ad, 0, count * 4);
-    const bpd = new ArrayBuffer(32), bpu = new Uint32Array(bpd), bpf = new Float32Array(bpd);
-    bpu[0] = count; bpu[1] = n; bpf[4] = w.climb; bpf[5] = w.wade; bpf[6] = w.snowCost; bpf[7] = w.snowCap;
+    const bpd = new ArrayBuffer(48), bpu = new Uint32Array(bpd), bpf = new Float32Array(bpd);
+    bpu[0] = count; bpu[1] = n; bpf[4] = w.climb; bpf[5] = w.swim; bpf[6] = w.snowCost; bpf[7] = w.snowCap; bpf[8] = w.swimDepth;
     q.writeBuffer(this.BP, 0, bpd);
 
     // newborn brains: painted from their genomes' programs
@@ -771,14 +870,15 @@ class GpuSim {
     const A = () => this.A[this.pa], B = () => this.B[this.pb];
     const base = [this.P, this.rows];
     go(P.apply, ...base, A(), B(), this.dlBuf);
-    go(P.soil, ...base, A(), this.A[1 - this.pa], this.stat); this.pa ^= 1;
-    go(P.weather, ...base, A(), B(), this.stat, this.acc);
+    go(P.light, ...base, this.stat, this.lightBuf);
+    go(P.soil, ...base, A(), this.A[1 - this.pa], this.stat, this.lightBuf); this.pa ^= 1;
+    go(P.weather, ...base, A(), B(), this.stat, this.acc, this.lightBuf);
     for (let s = 0; s < L.flowSteps; s++) {
-      go(P.flux, ...base, A(), this.flux, this.stat);
-      go(P.gather, ...base, A(), B(), this.A[1 - this.pa], this.B[1 - this.pb], this.flux); this.pa ^= 1; this.pb ^= 1;
+      go(P.flux, ...base, A(), this.fluxA, this.fluxB, this.stat);
+      go(P.gather, ...base, A(), B(), this.A[1 - this.pa], this.B[1 - this.pb], this.fluxA, this.fluxB); this.pa ^= 1; this.pb ^= 1;
     }
     go(P.creep, ...base, A(), B(), this.A[1 - this.pa], this.B[1 - this.pb], this.stat, this.acc); this.pa ^= 1; this.pb ^= 1;
-    go(P.grow, ...base, A(), B(), this.A[1 - this.pa], this.B[1 - this.pb], this.stat, this.dlBuf, this.acc); this.pa ^= 1; this.pb ^= 1;
+    go(P.grow, ...base, A(), B(), this.A[1 - this.pa], this.B[1 - this.pb], this.stat, this.dlBuf, this.acc, this.lightBuf); this.pa ^= 1; this.pb ^= 1;
     run.end();
 
     if (count) {
@@ -787,7 +887,7 @@ class GpuSim {
       bp.setBindGroup(0, this.bg(P.scatter, this.BP, this.an, this.cell));
       bp.dispatchWorkgroups(Math.ceil(count / 64));
       bp.setPipeline(P.brain.pipeline);
-      bp.setBindGroup(0, this.bg(P.brain, this.BP, this.rows, this.an, this.cell, A(), this.stat, this.wts, this.res));
+      bp.setBindGroup(0, this.bg(P.brain, this.BP, this.rows, this.an, this.cell, A(), this.stat, this.wts, this.res, this.lightBuf));
       bp.dispatchWorkgroups(Math.min(count, 65535), Math.ceil(count / 65535));
       bp.end();
       enc.copyBufferToBuffer(this.res, 0, this.readRes, 0, count * 4);
@@ -838,7 +938,7 @@ class GpuSim {
   pendingNitrogen() { let s = 0; for (const i of this.touched) s += this.dl[4 * i + 1]; return s; }   // (what the animals dropped since the last step went up)
 
   destroy() {
-    for (const b of [...this.A, ...this.B, this.stat, this.dlBuf, this.flux, this.acc, this.P, this.rows, this.readA, this.readB, this.readAcc, this.wts, this.an, this.res, this.readRes, this.BP, this.CP, this.DP, this.tIdx, this.tVal, this.cell, this.prog, this.bornBuf]) b?.destroy();
+    for (const b of [...this.A, ...this.B, this.stat, this.lightBuf, this.dlBuf, this.fluxA, this.fluxB, this.acc, this.P, this.rows, this.readA, this.readB, this.readAcc, this.wts, this.an, this.res, this.readRes, this.BP, this.CP, this.DP, this.tIdx, this.tVal, this.cell, this.prog, this.bornBuf]) b?.destroy();
     this.L.dev = null;
   }
 }

@@ -18,12 +18,35 @@
 // are collected here as deltas, see `delta`). This file has no DOM in it.
 import { makeRng } from './sim.js';
 
-// Average precipitation by month (inches of water, snow melted) at Mammoth, Yellowstone's driest and warmest corner, from NOAA's climate
-// normals: https://climate-charts.com/USA-Stations/WY/USC00489905.html. May is the wettest month, there is a second peak in October, and
-// winter and high summer are driest.
-const MONTH_RAIN = [0.9, 1.0, 1.2, 1.5, 1.7, 1.5, 1.2, 1.1, 1.2, 1.6, 1.4, 0.9];
+// The regional weather the map is given, as it would be for any weather generator: how much precipitation (mm) falls in an average month over the whole
+// map, from the PRISM 1991-2020 normals (https://prism.oregonstate.edu/normals/) averaged over it. May and June are the wettest months and July to September the driest.
+// Where it falls, how much as snow, and how warm it is are then up to the ground and the height of every cell (see climateRows and Land.step).
+const MONTH_RAIN = [36, 33, 38, 51, 66, 56, 30, 27, 35, 40, 35, 38];
 const MONTH_MID = [15.5, 45, 74.5, 105, 135.5, 166, 196.5, 227.5, 258, 288.5, 319, 349.5];   // middle day of each month
 const RAIN_MEAN = MONTH_RAIN.reduce((x, y) => x + y, 0) / 12;
+
+/** The colours of the land view, which the animals see too: bare ground shaded by height and by how the sun falls on the slope, with grass, water and snow mixed over it.
+ *  `landRgb` writes the red, green and blue (0-255) of a cell with the given height, slope light (the sunlight on it minus what flat ground there gets), grass, water and snow into `out`. */
+export const LANDVIEW = {
+  earth: [222, 212, 186], green: [52, 152, 84], water: [48, 112, 214], snow: [250, 252, 255],
+  heightGain: 0.05, slopeGain: 0.8, reliefMax: 1.25,
+  grassFull: 4, grassMax: 0.95, waterFull: 1.8, waterMax: 0.8, snowFull: 0.8, snowMax: 0.9,
+};
+export function landRgb(height, slope, grass, water, snow, out) {
+  const V = LANDVIEW, E = V.earth;
+  const relief = Math.max(0, Math.min(V.reliefMax, 0.55 + V.heightGain * height + V.slopeGain * slope));
+  let r = E[0] * relief, g = E[1] * relief, b = E[2] * relief;
+  let f = Math.min(V.grassMax, grass / V.grassFull);
+  r += (V.green[0] - r) * f; g += (V.green[1] - g) * f; b += (V.green[2] - b) * f;
+  f = Math.min(V.waterMax, water / V.waterFull);
+  r += (V.water[0] - r) * f; g += (V.water[1] - g) * f; b += (V.water[2] - b) * f;
+  f = Math.min(V.snowMax, snow / V.snowFull);
+  r += (V.snow[0] - r) * f; g += (V.snow[1] - g) * f; b += (V.snow[2] - b) * f;
+  out[0] = Math.min(255, r); out[1] = Math.min(255, g); out[2] = Math.min(255, b);
+}
+
+/** How much more precipitation falls per km of height: `mean` through the year, `amp` more in midwinter and less in midsummer. */
+export const ORO = { mean: 0.72, amp: 0.38 };
 
 /** How much rain falls at `doy` (day of the year, from 0) compared with an average day: 1 is average. */
 export function rainFactor(doy) {
@@ -42,10 +65,9 @@ export function dayOfYear(t, dayLength, yearDays) {
 /** The latitude of a row: by default the top of the map is 65 degrees north and the bottom 25, with Yellowstone's 45 in the middle. */
 export const latOfRow = (r, n, top = 65, bottom = 25) => top - ((top - bottom) * r) / (n - 1);
 
-/** How wet a latitude is next to the middle of the map: dry in the south, wettest through the middle, drier again in the far north. */
-const rainScale = (lat) => (0.6 + 0.4 * Math.exp(-(((lat - 50) / 15) ** 2))) / (0.6 + 0.4 * Math.exp(-((-5 / 15) ** 2)));
-
 const RAD = Math.PI / 180;
+const DIRS8 = [[-1, 0], [0, 1], [1, 0], [0, -1], [-1, -1], [-1, 1], [1, 1], [1, -1]];   // up, right, down, left, up-left, up-right, down-right, down-left
+const DW8 = DIRS8.map(([a, b]) => (a && b ? Math.SQRT1_2 : 1));      // a diagonal step is longer, so the slope along it is gentler
 
 /** The sun's declination (how far north of the equator it is overhead, in radians) on day N of the year, N = 1 on 1 January: the standard almanac formula, which allows for the Earth's elliptical orbit. It peaks at 23.44 degrees on the June solstice. */
 export const declination = (N) => -Math.asin(0.39779 * Math.cos(0.98565 * RAD * (N + 10) + 1.914 * RAD * Math.sin(0.98565 * RAD * (N - 2))));
@@ -53,12 +75,16 @@ export const declination = (N) => -Math.asin(0.39779 * Math.cos(0.98565 * RAD * 
 /** The equation of time, in minutes, on day N: how far a sundial runs ahead of a clock that keeps even time (about +16 in early November, -14 in mid February). */
 export const equationOfTime = (N) => { const B = (2 * Math.PI * (N - 81)) / 365; return 9.87 * Math.sin(2 * B) - 7.53 * Math.cos(B) - 1.5 * Math.sin(B); };
 
+export const SHADOW_SOFT = 0.03;  // the sun is half hidden when its height (as a sine) is just the skyline's, and fully hidden at this much below it, so shadows have soft edges (cells are 1.5 km across: a hill inside one only half covers it)
+export const SHADOW_REACH = 40;   // how far a hill can throw a shadow, in cells (60 km)
+
 /**
  * The sun and the weather for every row of an n-row map at step t. The sun is placed where it really would be, from the row's latitude,
  * the date (it is over 23.44 degrees north at midsummer and the same south at midwinter) and the hour by the sundial, which runs a little
  * ahead of or behind the clock through the year (due south at noon, east of south in the morning). From that, `sun` is how high it is for flat ground (0 at night, 1 straight overhead), and `east`, `north`
  * and `up` are the direction to it, which a slope uses to work out how squarely it faces the sun. The air temperature falls with
- * latitude and swings more between summer and winter further north. `rain` is how wet the row's latitude is, and `wet` how wet the month is.
+ * latitude and swings more between summer and winter further north. For the sun's place at a cell that is not on the middle meridian, `sunlight` needs
+ * the sine and cosine of the sundial's hour angle there (`ch`, `sh`), of the declination (`sd`, `cd`) and of every row's latitude (`sinLat`, `cosLat`). `rain` is how wet the row's latitude is, and `wet` how wet the month is.
  * `rainSwing` is how much of the real rainfall seasonality to keep (1 = all of it, 0 = none).
  */
 export function climateRows(t, n, dayLength = 60, yearDays = 30, rainSwing = 1, top = 65, bottom = 25) {
@@ -67,28 +93,38 @@ export function climateRows(t, n, dayLength = 60, yearDays = 30, rainSwing = 1, 
   const doy = dayOfYear(t, dayLength, yearDays);   // day 1 is 1 January, so the start (21 June) is day 172
   const hour = day + (equationOfTime(doy) * 2 * Math.PI) / 1440;   // the sundial's hour angle: ahead of the clock when the equation of time is positive
   const ch = Math.cos(hour), sh = Math.sin(hour);
-  const tday = 4 * Math.cos(day - 0.6), ty = Math.cos(yr - 0.3);
+  const tday = 4 * Math.cos(day - 0.6);
   const decl = declination(doy), sd = Math.sin(decl), cd = Math.cos(decl);
   const f = 1 + rainSwing * (rainFactor(dayOfYear(t, dayLength, yearDays)) - 1);
-  const sun = new Float64Array(n), temp = new Float64Array(n), rain = new Float64Array(n);
+  const sun = new Float64Array(n), temp = new Float64Array(n), rain = new Float64Array(n), sinLat = new Float64Array(n), cosLat = new Float64Array(n);
   const east = new Float64Array(n), north = new Float64Array(n), up = new Float64Array(n);
+  // The regional climate, fitted to the PRISM normals over the map: at the map's average height the air averages 5.1 C and swings 11.9 C either way
+  // through the year, warmest around 21 July. Going north it is colder by about 0.85 C a degree in summer and about nothing in winter. The air cools
+  // with height by about 6 C a km in summer but less (2 to 3) in winter, when cold air pools in the valleys.
+  const N = doy, mid = (top + bottom) / 2, w = (2 * Math.PI * N) / 365;
+  const tRef = 5.1 + 11.9 * Math.cos(w - (2 * Math.PI * 202) / 365), tLat = -0.4 - 0.45 * Math.cos(w - (2 * Math.PI * 200) / 365);
+  const lapse = 4.6 + 1.6 * Math.cos(w - (2 * Math.PI * 170) / 365);
+  // How much more precipitation falls the higher the ground: about 110% of the average for each km in winter, 35% in summer (the westerlies are stronger in winter),
+  // and how much of it falls in the north rather than the south (more in the north, most of all in early summer)
+  const kOro = ORO.mean + ORO.amp * Math.cos(w - (2 * Math.PI * 15) / 365), north2south = 0.9 + 0.45 * Math.cos(w - (2 * Math.PI * 190) / 365);
   for (let r = 0; r < n; r++) {
     const lat = latOfRow(r, n, top, bottom), phi = (lat * Math.PI) / 180, sp = Math.sin(phi), cp = Math.cos(phi);
+    sinLat[r] = sp; cosLat[r] = cp;
     up[r] = sp * sd + cp * cd * ch;
     east[r] = -cd * sh;
     north[r] = sd * cp - cd * sp * ch;
     sun[r] = Math.max(0, up[r]);
-    temp[r] = 8 + 0.5 * (45 - lat) + (14 + 0.25 * (lat - 45)) * ty + tday;
-    rain[r] = rainScale(lat);
+    temp[r] = tRef + tLat * (lat - mid) + tday;
+    rain[r] = Math.max(0.05, 1 + (north2south * (lat - mid)) / (top - bottom));
   }
-  return { sun, east, north, up, temp, rain, wet: Math.sqrt(Math.max(0, f)), season };
+  return { sun, east, north, up, temp, rain, lapse, kOro, wet: Math.sqrt(Math.max(0, f)), season, sd, cd, ch, sh, sinLat, cosLat };
 }
 
 export class Land {
   /**
    * opts: seed, size (100), relief (6: the tallest ground is this much above the lowest, in the same units as water depth),
    *       rainChance (0.1: chance per step of a shower in an average season), rainDepth (0.075: depth of an average shower),
-   *       evap (0.008: water lost per step from a bare cell at noon in summer), lapse (1.2: degrees colder per unit of height), meltRate (0.001: snow melted per degree above freezing per step), outletShare (0.03: the lowest ground that drains away as a river) and outletRate (0.3 of its water per step), seep (0.01: share of the surface water that soaks below the roots per step, plus floodSeep = 0.05 of any water deeper than 1.5, at most seepMax = 0.08 a cell), flow (0.2: share of a height difference that runs off per step),
+   *       evap (0.008: water lost per step from a bare cell at noon in summer), lapse (1.2: degrees colder per unit of height), meltRate (0.016: snow melted per degree above freezing per step), outletShare (0.03: the lowest ground that drains away as a river) and outletRate (0.3 of its water per step), seep (0.01: share of the surface water that soaks below the roots per step, plus floodSeep = 0.05 of any water deeper than 1.5, at most seepMax = 0.08 a cell), flow (0.2: share of a height difference that runs off per step),
    *       grass (1: starting amount on every cell), gMax (10: the most a cell can hold), regrow (0.04: growth rate per step at full light, moisture and nitrogen),
    *       waterPer (0.3: water used per unit grown), nPer (0.02: nitrogen held per unit of grass),
    *       creep (0.02: share of a cell's nitrogen that spreads to its neighbours per step), leach (0.0005), deposit (0.00005: nitrogen in the rain)
@@ -103,12 +139,12 @@ export class Land {
     this.rainDepth = opts.rainDepth ?? 0.075;
     this.evap = opts.evap ?? 0.008;
     this.lapse = opts.lapse ?? 1.2;
-    this.meltRate = opts.meltRate ?? 0.001;
+    this.meltRate = opts.meltRate ?? 0.016;
     this.flow = opts.flow ?? 0.2;
     this.flowSteps = opts.flowSteps ?? 4;
     this.creep = opts.creep ?? 0.02;
-    this.seep = opts.seep ?? 0.01;
-    this.floodSeep = opts.floodSeep ?? 0.05;   // flood water, deeper than 1.5, drains this share of the excess per step
+    this.seep = opts.seep ?? (opts.terrain ? 0.0005 : 0.01);   // (on a real map only the top layer soaks away, and slowly: most of the rain runs off, is drunk or evaporates)
+    this.floodSeep = opts.floodSeep ?? (opts.terrain ? 0 : 0.05);   // (the toy water of a made-up map) flood water, deeper than 1.5, drains this share of the excess per step
     this.seepMax = opts.seepMax ?? 0.08;   // ...but no more than this per cell, so a lake loses water at a fixed rate per square of its surface
     this.leach = opts.leach ?? 0.0005;
     this.deposit = opts.deposit ?? 0.00005;
@@ -121,6 +157,7 @@ export class Land {
     this.water = new Float64Array(size).fill(opts.water ?? 0.5);
     this.nitrogen = new Float64Array(size).fill(opts.nitrogen ?? 0.3);
     this.snow = new Float64Array(size);   // snowpack, in water depth
+    this.lake = new Uint8Array(size);     // 1 on the cells that are lake
     this.grass = new Float64Array(size).fill(opts.grass ?? 1);
     this.gMax = opts.gMax ?? 10;
     this.regrow = opts.regrow ?? 0.04;
@@ -130,7 +167,9 @@ export class Land {
     this._g = new Float64Array(size);
     this._w = new Float64Array(size);
     this._n = new Float64Array(size);
+    this._f8 = new Float64Array(8);
     this.cellRun = null;
+    this.west = this.east = null;
     if (opts.terrain) this.loadTerrain(opts.terrain, opts); else this.makeTerrain();
     // which way each cell's slope faces, for the sun: the unit normal to the ground (east, north, up). `run` is how far across a cell is in the same
     // units as height, so it sets how steep the hills really are.
@@ -143,9 +182,22 @@ export class Land {
     }
     this.nbr = new Int32Array(4 * size);   // the four neighbours (up, right, down, left) of every cell, so the hot loops need no division
     for (let i = 0; i < size; i++) for (let d = 0; d < 4; d++) this.nbr[4 * i + d] = this.nb(i, d);
+    // all eight neighbours (up, right, down, left, then the diagonals), for water: it runs downhill in any of eight directions, the way the ground was filled in. A cell on the map's edge is its own neighbour there.
+    this.nbr8 = new Int32Array(8 * size);
+    for (let i = 0; i < size; i++) {
+      const r = (i / n) | 0, c = i - r * n;
+      DIRS8.forEach(([dr, dc], k) => { const rr = r + dr, cc = c + dc; this.nbr8[8 * i + k] = rr < 0 || rr >= n || cc < 0 || cc >= n ? i : rr * n + cc; });
+    }
     this.light = new Float32Array(size);   // the sunlight each cell gets now: slopes facing the sun get more than flat ground, slopes facing away less
     this.flat = new Float64Array(n);       // ...and what flat ground at each row gets
-    this.sunWarm = opts.sunWarm ?? 10;     // degrees a cell's ground is warmed (or cooled) for each unit of sun it gets above (or below) flat ground
+    this.slope = new Float32Array(size);   // the sunlight on each cell minus what flat ground there gets: positive on slopes facing the sun, negative on ones turned away or in shade
+    // the ground is heated by the sun it absorbs and cooled by radiating heat away (and loses it to the air above): where the air is `a` degrees, bare ground in full sun settles `sunHeat`
+    // degrees above it, and the dark ground at night `radCool` below it. Snow reflects most of the sun, so snow-covered ground stays cold.
+    this.sunHeat = opts.sunHeat ?? 14;
+    this.radCool = opts.radCool ?? 2;
+    this.albedo = opts.albedo ?? 0.2;            // the share of sunlight bare, grassy ground reflects
+    this.snowAlbedo = opts.snowAlbedo ?? 0.8;    // ...and fresh snow
+    this.snowAlbedoDepth = opts.snowAlbedoDepth ?? 0.3;   // (snow this deep covers the ground completely)
     // the river leaves the map: water that reaches the outlet (the lowest ground, or on a real map the edges) drains away, with the nitrogen dissolved in it
     this.outlet = new Uint8Array(size);
     if (opts.terrain) {   // a real map: rivers leave across its edges
@@ -156,9 +208,13 @@ export class Land {
       for (let i = 0; i < size; i++) if (this.elev[i] <= cut) this.outlet[i] = 1;
     }
     this.outletRate = opts.outletRate ?? 0.3;
-    this.chill = new Float64Array(size);   // how much colder than the valley floor each cell is
-    const meanElev = this.sum(this.elev) / size;   // the temperature the page shows is the one at the map's average height
-    for (let i = 0; i < size; i++) this.chill[i] = this.lapse * (this.elev[i] - meanElev);
+    // how high each cell is above the map's average height, in km (the air temperature the page shows is the one at that height)
+    this.hKm = new Float64Array(size);
+    const meanElev = this.sum(this.elev) / size, kmPerUnit = this.metresPerUnit ? this.metresPerUnit / 1000 : this.lapse / 6.5;
+    for (let i = 0; i < size; i++) this.hKm[i] = (this.elev[i] - meanElev) * kmPerUnit;
+    this.chill = new Float64Array(size);   // how much colder than the map's average height each cell's air is right now (the air cools faster with height in summer than in winter)
+    this.kOro = 0.72;                       // how much more it rains per km of height right now (set each step from the season)
+    this.updateChill(6);
 
     // ground temperature: one number per cell. It follows the air above it with a lag, conducts to the eight cells around it, and is
     // warmed by the animals standing on it. Snow melts by it, grass grows by it, and animals feel it.
@@ -173,11 +229,39 @@ export class Land {
     this.waterHeat = opts.waterHeat ?? 1;     // water holds heat: each unit of depth adds this much to a cell's heat capacity (dry ground is 1; a toy-scale choice, about right for the daily swing)
     this.waterHeatMax = opts.waterHeatMax ?? 5;  // (deeper than this, it is the same as this deep)
 
+    // Water is still counted in the old unit, about 37 mm of water, but on a real map its level is now compared with the ground in real terms (a unit of height is a few hundred metres),
+    // and the first `flowMin` of the water on a cell does not run off at all: soil, grass and the small dips of the ground hold it. Only what lies above that flows, so rain soaks in and feeds
+    // the grass, snowmelt and storms run off in streams, and deep water (lakes) lies level and spills at its lowest rim. (It is the water above the stored layer that moves, not all of a cell's
+    // water once it passes a depth: a cell that was just deeper would otherwise send nearly all it has to its neighbours at once, they would be deeper than it, and the water would slosh back and forth.)
+    const phys = !!opts.terrain;
+    this.waterMm = opts.waterMm ?? 37.1;                                            // mm of water in a unit
+    this.invWs = opts.invWs ?? (phys ? (this.metresPerUnit * 1000) / this.waterMm : 1);   // units of water in a unit of height
+    this.retain = opts.retain ?? (phys ? 2.7 : 0);                                  // (2.7 units is 0.1 m)
+    this.flowMin = opts.flowMin ?? (phys ? 0.7 : 0);                                // (0.7 units is 26 mm: the depth of water every cell holds back; grass is very sensitive to it)
+    this.soakMax = opts.soakMax ?? (phys ? this.retain : Infinity);                // only the top layer soaks away; deep water does not
+    this.nMobile = opts.nMobile ?? (phys ? 0.1 : 1);                                 // the share of a cell's nitrogen that is dissolved in its water, and so runs off with it
+    this.floodStart = opts.floodStart ?? (phys ? this.retain : 1.5);               // grass is flooded when the water on it is deeper than this...
+    this.floodEnd = opts.floodEnd ?? (phys ? 3 * this.retain : 2.5);               // ...and drowned when it is deeper than this
+    if (phys && opts.lakes) this.carveLakes(opts.lakes);
+    // The sun is not up at the same moment across the map: it reaches a place 4 minutes sooner for every degree of longitude east of it. Each column's sundial
+    // is ahead of the middle meridian's by its longitude (in radians) east of the middle.
+    this.colCos = new Float64Array(n).fill(1); this.colSin = new Float64Array(n);
+    this.colA = new Float64Array(n); this.colB = new Float64Array(n);
+    if (this.west !== null) for (let c = 0; c < n; c++) { const d = ((this.west + ((c + 0.5) / n) * (this.east - this.west) - (this.west + this.east) / 2) * Math.PI) / 180; this.colCos[c] = Math.cos(d); this.colSin[c] = Math.sin(d); }
+    // ...and ridges throw shadows. The sun sees the lakes' surface, not their bed.
+    this.skyH = null;
+    if (phys && opts.shadows !== false) {
+      this.skyH = new Float32Array(size);
+      for (let i = 0; i < size; i++) this.skyH[i] = this.elev[i] + (this.lake[i] ? (this.water[i] * this.waterMm) / 1000 / this.metresPerUnit : 0);
+      this.skyMax = this.skyH.reduce((m, v) => Math.max(m, v), -Infinity);
+    }
+
     this.start = { water: this.sum(this.water), nitrogen: this.sum(this.nitrogen) + this.nPer * this.sum(this.grass) };
     this.ledger = { rain: 0, evap: 0, seep: 0, river: 0, uptake: 0, nIn: 0, nLeach: 0 };
     this.raining = false;
     this.dev = null;   // the GPU side (gpu.js), when the ground runs there
   }
+  // (this.lake: see the constructor)
 
   sum(a) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s; }
 
@@ -264,6 +348,7 @@ export class Land {
     const metresPerUnit = (hi - lo) / this.relief;
     this.metresPerUnit = metresPerUnit;
     this.cellRun = ((T.sideKm * 1000) / n) / metresPerUnit;
+    this.west = T.west; this.east = T.east;   // the longitudes of the map's edges
     if (opts.lapse === undefined) this.lapse = (6.5 * metresPerUnit) / 1000;
     this.pitDepth = opts.pitDepth ?? 0.04;
     this.normalise();
@@ -333,6 +418,18 @@ export class Land {
     D.dl[4 * i + k] += v;
   }
 
+  /** Set how much colder than the average height every cell's air is, from the lapse rate (degrees a km) of the season. */
+  updateChill(lapse) {
+    const C = this.chill, H = this.hKm;
+    for (let i = 0; i < C.length; i++) C[i] = lapse * H[i];
+  }
+
+  /** Dig the lakes: `L.cells` is [cell, mean depth in metres] for each lake cell. The bed is dug below the surface the elevation data shows, and the lake starts full. */
+  carveLakes(L) {
+    if (L.n !== this.n) throw new Error(`the lakes are for a map ${L.n} cells across, this one is ${this.n}`);
+    for (const [i, d] of L.cells) { this.elev[i] -= d / this.metresPerUnit; this.water[i] = (d * 1000) / this.waterMm; this.grass[i] = 0; this.lake[i] = 1; }
+  }
+
   /** An animal burned `energy` at cell i: it is given off as heat into the ground there. */
   heat(i, energy) {
     this.soil[i] += (this.heatGain * energy) / this.capacity(i);
@@ -345,19 +442,57 @@ export class Land {
   /** The air temperature at cell i: colder up the hill. */
   airAt(i) { return this.rowTemp[this.row[i]] - this.chill[i]; }
 
-  /** How much sun each cell gets: the direct beam in proportion to how squarely the slope faces it, plus a little skylight. Nothing at night. */
-  sunlight(clim) {
-    const n = this.n, L = this.light, nE = this.nE, nN = this.nN, nU = this.nU;
+  /** The sun's place along each column of the map (see climateRows): colA = cos of the declination x cos of the hour angle there, colB = east component of the sun. */
+  sunColumns(clim) {
+    const n = this.n, { cd, ch, sh } = clim, cC = this.colCos, sC = this.colSin, A = this.colA, B = this.colB;
     this.flat = clim.sun;
+    for (let c = 0; c < n; c++) { const cosH = ch * cC[c] - sh * sC[c], sinH = sh * cC[c] + ch * sC[c]; A[c] = cd * cosH; B[c] = -cd * sinH; }
+  }
+
+  /** The share of the beam that reaches cell i (row r, column c) when the sun is at (east e, north no, up u): 1 in the open, 0 behind a hill, in between at the soft edge. */
+  sunSees(i, r, c, e, no, u) {
+    const n = this.n, sky = this.skyH, run = this.run;
+    const h = Math.hypot(e, no), dx = e / h, dy = -no / h, h0 = sky[i], rise = (this.skyMax - h0) / run;   // (rows run south, so north is up the page)
+    const lo = u - SHADOW_SOFT / 2, need = lo > 0 ? lo / Math.sqrt(1 - lo * lo) : 0;   // ground lower than this angle cannot hide any of the sun
+    let best = need;   // the tangent of the skyline's height
+    let seen = 0;
+    for (let s = 1; s <= SHADOW_REACH && rise > best * s; s++) {   // (the highest ground there is, at this distance, could not rise above `best` any more)
+      const rr = Math.floor(r + dy * s + 0.5), cc = Math.floor(c + dx * s + 0.5);
+      if (rr < 0 || rr >= n || cc < 0 || cc >= n) break;
+      const t = (sky[rr * n + cc] - h0) / (s * run);
+      if (t > best) { best = t; seen = 1; }
+    }
+    if (!seen) return 1;
+    const x = Math.min(1, Math.max(0, (u - best / Math.sqrt(1 + best * best)) / SHADOW_SOFT + 0.5));
+    return x * x * (3 - 2 * x);
+  }
+
+  /** How much sun each cell gets: the direct beam in proportion to how squarely the slope faces it, plus a little skylight. Nothing at night.
+   *  The sun's place is worked out for each cell's own longitude. A hill between the cell and the sun hides the beam: a ray is followed from the cell toward the sun,
+   *  and the highest ground it passes (as an angle above the cell's own level) is the skyline; the beam is hidden when the sun is below it, with a soft edge. */
+  sunlight(clim) {
+    const n = this.n, L = this.light, S = this.slope, nE = this.nE, nN = this.nN, nU = this.nU, sky = this.skyH, A = this.colA, B = this.colB;
+    const { sd, sinLat, cosLat } = clim;
+    this.sunColumns(clim);
     for (let r = 0; r < n; r++) {
-      const u = clim.up[r], e = clim.east[r], no = clim.north[r], base = r * n;
-      if (u <= 0) { L.fill(0, base, base + n); continue; }
+      const sp = sinLat[r], cp = cosLat[r], base = r * n;
       for (let c = 0; c < n; c++) {
-        const i = base + c, d = nE[i] * e + nN[i] * no + nU[i] * u;
-        L[i] = 0.9 * (d > 0 ? d : 0) + 0.1 * u;
+        const i = base + c, a = A[c], u = sp * sd + cp * a;
+        if (u <= 0) { L[i] = 0; S[i] = 0; continue; }
+        const e = B[c], no = sd * cp - sp * a;
+        let beam = nE[i] * e + nN[i] * no + nU[i] * u;
+        if (beam > 0) {
+          if (sky) beam *= this.sunSees(i, r, c, e, no, u);
+        } else beam = 0;
+        L[i] = 0.9 * beam + 0.1 * u;
+        S[i] = L[i] - u;
       }
     }
+    this.lightClim = clim;
   }
+
+  /** Make sure `light` is for the sun described by `clim` (on the card the ground's own light is worked out there, so this is only done when something here wants to look at it). */
+  ensureLight(clim) { if (this.lightClim !== clim) this.sunlight(clim); }
 
   /** Ground temperature: closes in on the air above it, and on what its neighbours are. Heat only moves around, so a neighbour's gain is
    * this cell's loss; what a degree of it is worth depends on the cell's heat capacity, so wet cells swing slowly. */
@@ -366,11 +501,12 @@ export class Land {
     if (this.soilFresh) { for (let i = 0; i < size; i++) S[i] = this.rowTemp[this.row[i]] - chill[i]; this.soilFresh = false; }
     for (let r = 0; r < n; r++) {
       const mid = r * n, up = r > 0 ? mid - n : mid, dn = r < n - 1 ? mid + n : mid;   // (a wall counts as the cell itself)
-      const air = this.rowTemp[r], flat = this.flat[r];
+      const air = this.rowTemp[r];
       for (let c = 0; c < n; c++) {
         const l = c > 0 ? c - 1 : c, rt = c < n - 1 ? c + 1 : c, i = mid + c;
         const around = S[up + l] + S[up + c] + S[up + rt] + S[mid + l] + S[mid + rt] + S[dn + l] + S[dn + c] + S[dn + rt];
-        T[i] = S[i] + (lag * (air - chill[i] + this.sunWarm * (this.light[i] - flat) - S[i]) + k * around - this.soilConduct * S[i]) / this.capacity(i);
+        const alb = this.albedo + (this.snowAlbedo - this.albedo) * Math.min(1, this.snow[i] / this.snowAlbedoDepth);
+        T[i] = S[i] + (lag * (air - chill[i] + this.sunHeat * (1 - alb) * this.light[i] - this.radCool - S[i]) + k * around - this.soilConduct * S[i]) / this.capacity(i);
       }
     }
     this.soil = T; this._s = S;
@@ -381,7 +517,8 @@ export class Land {
    * stay in one place), and the totals that are known without looking at the cells. Returns what the GPU needs: the first step also needs the ground temperature set.
    */
   gpuPrep(clim) {
-    this.sunlight(clim);
+    this.sunColumns(clim);   // (the cells' light is worked out on the card; `sunlight` fills `light` here only when the picture wants it)
+    this.updateChill(clim.lapse); this.kOro = clim.kOro;
     this.rowTemp = clim.temp;
     this.temp = clim.temp[(this.n - 1) >> 1];
     const n = this.n, size = n * n;
@@ -390,8 +527,8 @@ export class Land {
     this.raining = this.rng.next() < this.rainChance * clim.wet;
     if (this.raining) {
       let fell = 0;
-      for (let r = 0; r < n; r++) fell += this.rainDepth * clim.wet * clim.rain[r];
-      this.ledger.rain += fell * n;
+      for (let i = 0; i < size; i++) fell += this.rainDepth * clim.wet * clim.rain[this.row[i]] * Math.max(0.1, 1 + this.kOro * this.hKm[i]);
+      this.ledger.rain += fell;
     }
     this.ledger.nIn += this.deposit * size;
     return fresh;
@@ -400,6 +537,7 @@ export class Land {
   /** One step of weather and water. `clim` comes from climateRows. */
   step(clim, occupied = null) {
     this.sunlight(clim);
+    this.updateChill(clim.lapse); this.kOro = clim.kOro;
     this.rowTemp = clim.temp;   // row by row, at middle height; every cell is colder or warmer than this by its height (see airAt)
     this.temp = clim.temp[(this.n - 1) >> 1];
     this.warmGround();
@@ -411,7 +549,7 @@ export class Land {
     if (this.raining) {
       let fell = 0;
       for (let i = 0; i < size; i++) {
-        const r = this.row[i], d = this.rainDepth * clim.wet * clim.rain[r];   // more falls on the wetter latitudes
+        const r = this.row[i], d = this.rainDepth * clim.wet * clim.rain[r] * Math.max(0.1, 1 + this.kOro * this.hKm[i]);   // more falls in the north, and more the higher the ground
         if (clim.temp[r] - chill[i] < 1) S[i] += d; else W[i] += d;           // snow where the air is near freezing
         fell += d;
       }
@@ -437,32 +575,30 @@ export class Land {
     }
     this.ledger.evap += gone;
     let soaked = 0;
-    for (let i = 0; i < size; i++) { const x = Math.min(W[i] * this.seep + this.floodSeep * Math.max(0, W[i] - 1.5), this.seepMax); W[i] -= x; soaked += x; }
+    for (let i = 0; i < size; i++) { const x = Math.min(Math.min(W[i], this.soakMax) * this.seep + this.floodSeep * Math.max(0, W[i] - 1.5), this.seepMax); W[i] -= x; soaked += x; }
     this.ledger.seep += soaked;
 
     // --- flow: water runs to lower neighbours in proportion to the drop in water surface, taking its nitrogen with it
-    const nw = this._w, nn = this._n, K = this.flow, nbr = this.nbr;
+    const nw = this._w, nn = this._n, K = this.flow, nbr = this.nbr, nbr8 = this.nbr8, fl = this._f8, iw = this.invWs, fmin = this.flowMin, nm = this.nMobile;
     for (let sub = 0; sub < this.flowSteps; sub++) {
       nw.set(W); nn.set(N);
       for (let i = 0; i < size; i++) {
         const w = W[i];
-        if (w <= 0) continue;
-        const s = E[i] + w;
-        let f0 = 0, f1 = 0, f2 = 0, f3 = 0, total = 0;
-        const j0 = nbr[4 * i], j1 = nbr[4 * i + 1], j2 = nbr[4 * i + 2], j3 = nbr[4 * i + 3];
-        let d = s - (E[j0] + W[j0]); if (d > 0) { f0 = K * d; total += f0; }
-        d = s - (E[j1] + W[j1]); if (d > 0) { f1 = K * d; total += f1; }
-        d = s - (E[j2] + W[j2]); if (d > 0) { f2 = K * d; total += f2; }
-        d = s - (E[j3] + W[j3]); if (d > 0) { f3 = K * d; total += f3; }
+        if (w <= fmin) continue;   // (thin water stays put)
+        const e = E[i];
+        let total = 0;
+        for (let k = 0; k < 8; k++) {
+          const j = nbr8[8 * i + k], d = (e - E[j]) * iw + (w - W[j]);   // (the drop in water surface, in units of water)
+          const f = d > 0 ? K * d * DW8[k] : 0; fl[k] = f; total += f;
+        }
         if (total <= 0) continue;
-        const scale = total > w ? w / total : 1;
-        const out = N[i] * ((total * scale) / w);   // the share of this cell's water that leaves carries the same share of its nitrogen
-        nw[i] -= total * scale; nn[i] -= out;
-        const k = out / (total * scale);            // nitrogen per unit of water that leaves
-        nw[j0] += f0 * scale; nn[j0] += f0 * scale * k;
-        nw[j1] += f1 * scale; nn[j1] += f1 * scale * k;
-        nw[j2] += f2 * scale; nn[j2] += f2 * scale * k;
-        nw[j3] += f3 * scale; nn[j3] += f3 * scale * k;
+        const free = w - fmin, scale = total > free ? free / total : 1;   // (never more than the cell has above the water it holds)
+        const moved = total * scale;
+        if (!(moved > 0)) continue;   // (so thin that nothing moves)
+        const out = N[i] * nm * (moved / w);   // the share of this cell's water that leaves carries the same share of its dissolved nitrogen
+        nw[i] -= moved; nn[i] -= out;
+        const kn = out / moved;           // nitrogen per unit of water that leaves
+        for (let k = 0; k < 8; k++) { if (fl[k] > 0) { const j = nbr8[8 * i + k], q = fl[k] * scale; nw[j] += q; nn[j] += q * kn; } }
       }
       W.set(nw); N.set(nn);
     }
@@ -496,8 +632,8 @@ export class Land {
   moisture(w) {
     if (w <= 0.05) return 0;
     if (w < 0.3) return (w - 0.05) / 0.25;
-    if (w <= 1.5) return 1;
-    if (w < 2.5) return 2.5 - w;
+    if (w <= this.floodStart) return 1;
+    if (w < this.floodEnd) return (this.floodEnd - w) / (this.floodEnd - this.floodStart);
     return 0;
   }
 

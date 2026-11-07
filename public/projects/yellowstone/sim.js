@@ -9,8 +9,9 @@
 // decides what it can live on; hunters are the ones whose diet has moved toward meat.
 //
 // This file has no DOM in it. app.js draws it.
-import { Land, climateRows, dayOfYear } from './land.js';
+import { Land, climateRows, dayOfYear, landRgb } from './land.js';
 import { TERRAIN } from './terrain.js';
+import { LAKES } from './lakes.js';
 
 /* ------------------------------------------------------------------ random numbers */
 
@@ -431,7 +432,11 @@ export function connectionTable() {
 
 // What the networks see: a cell's colour, normalised the way the original did ((rgb / 255) - 0.5).
 const SEEN_GREY = 128 / 255 - 0.5;
-const SEEN_GREEN = [-0.5, 0.5, -0.5];  // thick grass
+/** How well an animal sees a cell by the sunlight on it: clarity = floor + (1 - floor) x (1 - exp(-light / half)). The light is what that cell's ground gets (full sun on flat ground is about 0.9, the sun
+ *  10 degrees up about 0.17, a slope turned away from the sun, shade and the night 0 to 0.02), so a cell is clear when the sun shines squarely on it, dim in the half-light of dawn and dusk, of a hill's shadow or of
+ *  a slope that faces away from the sun, and at night leaves only `floor`: starlight, for animals that see well in the dark. With a low clarity colours fade to grey. */
+export const VISION = { floor: 0.2, half: 0.15 };
+export const clarityOf = (light) => VISION.floor + (1 - VISION.floor) * (1 - Math.exp(-light / VISION.half));
 
 const NEIGHBOURS = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]];
 const WALL = 1e30;   // the cost of stepping off the edge of the map
@@ -462,14 +467,15 @@ export class World {
     this.latBottom = opts.latBottom ?? (terrain ? terrain.latBottom : 25);
     this.snowCost = opts.snowCost ?? 0.04; // extra energy per unit of snow depth in the cell stepped into (a unit of snow is a few cm of water, so tens of cm of snow)...
     this.snowCap = opts.snowCap ?? 6;      // ...counted up to this depth
-    this.wade = opts.wade ?? 0.05;        // extra energy per unit of water depth in the cell stepped into (capped at 3 deep)
+    this.swim = opts.swim ?? (terrain ? 0.5 : 0.15);          // extra energy for a step into water deep enough to swim: several times a step on dry land
     this.rainSwing = opts.rainSwing ?? 1;      // how much of the real seasonal pattern of rainfall to keep
     this.bite = opts.bite ?? 0.5;         // the most grass an animal takes in one step
     this.gutMax = opts.gutMax ?? 2;       // the most it can carry undigested
     this.digestRate = opts.digestRate ?? 0.25;
     this.bodyN = opts.bodyN ?? 0.5;       // nitrogen in a newly released animal's body
     this.excrete = opts.excrete ?? 0.01;  // share of its body nitrogen an animal passes on each step
-    this.land = new Land({ seed: opts.seed ?? 1, size: this.n, terrain, ...(opts.land || {}) });
+    this.land = new Land({ seed: opts.seed ?? 1, size: this.n, terrain, lakes: terrain ? (opts.lakes === false ? null : opts.lakes ?? LAKES) : null, ...(opts.land || {}) });
+    this.swimDepth = opts.swimDepth ?? (terrain ? 1000 / this.land.waterMm : 3);   // that deep (a metre on the real map): feet leave the bottom
     this.gpu = opts.gpu ? opts.gpu.attach(this) : null;   // the ground and the brains run on the graphics card when there is one (see gpu.js)
     this.moves = new Float64Array(9);     // how often animals chose each of the 9 steps (row-major, middle = stay)
     this.t = 0;
@@ -562,9 +568,10 @@ export class World {
   }
 
   /** Energy a step costs: the effort of acting at all, more for a longer step, more again for each unit of height climbed (going down is free),
-   *  for wading through water (`depth` is the water on the cell stepped into) and for ploughing through snow (`snow`, the depth of the pack there). */
+   *  for water (`depth` is the water on the cell stepped into: the cost grows with it, from nothing for a puddle to the full cost of swimming at swimming depth
+   *  and no further; treading water costs the same) and for ploughing through snow (`snow`, the depth of the pack there: only when moving, standing in it is free). */
   stepCost(di, dj, rise, depth = 0, snow = 0) {
-    return REST + (0.1 * (Math.abs(di) + Math.abs(dj))) / 2 + this.climb * Math.max(0, rise) + this.wade * Math.min(3, depth) + this.snowCost * Math.min(this.snowCap, snow);
+    return REST + (0.1 * (Math.abs(di) + Math.abs(dj))) / 2 + this.climb * Math.max(0, rise) + this.swim * Math.min(1, depth / this.swimDepth) + (di || dj ? this.snowCost * Math.min(this.snowCap, snow) : 0);
   }
 
   /** Which cell of a 3 x 3 output grid has the strongest signal. `ch` of `chs` picks one of the grid's channels. Returns [di, dj, index]. */
@@ -577,22 +584,25 @@ export class World {
     return [((best / 3) | 0) - 1, (best % 3) - 1, best];
   }
 
-  /** Fill `buf` with the 9 x 9 x 3 colour field around (r, c): animals are coloured by diet, ground by how much grass is on it. Cells past the eight neighbours fade toward grey by `far`. */
-  look(r, c, buf, far = 0.6 + 0.4 * this.clim.sun[r]) {   // how clearly it sees past its neighbours: dimmer at night, but never blind
-    const n = this.n, G = this.land.grass, half = 4;
+  /** Fill `buf` with the 9 x 9 x 3 colour field around (r, c): animals are coloured by diet, the ground as it looks in the land view (bare ground shaded by height and by the slope's light, with grass, water
+   *  and snow over it: see `landRgb`), each number being the colour's red, green or blue as (value / 255) - 0.5. Every cell fades toward grey by how clearly the sun lights it (see `clarityOf`);
+   *  past the edge of the map, where there is nothing to light, by the light on the cell the animal stands on. (`land.light` must be for the current sun: see `Land.ensureLight`.) */
+  look(r, c, buf) {
+    const n = this.n, L = this.land, LT = L.light, half = 4, here = clarityOf(LT[r * n + c]), rgb = this.seenRgb ??= new Float64Array(3);
     let p = 0;
     for (let i = 0; i < 9; i++) {
       const rr = r + i - half;
       for (let j = 0; j < 9; j++) {
         const cc = c + j - half, off = rr < 0 || rr >= n || cc < 0 || cc >= n;
         const o = off ? null : this.grid[rr * n + cc];
-        const f = Math.abs(i - half) <= 1 && Math.abs(j - half) <= 1 ? 1 : far;
+        const f = off ? here : clarityOf(LT[rr * n + cc]);
         let c0, c1, c2;
         if (off) { c0 = c1 = c2 = -0.5; }   // past the edge of the map: black
         else if (o) { [c0, c1, c2] = o.col; }
         else {
-          const g = Math.min(1, G[rr * n + cc] / 4);
-          c0 = SEEN_GREY + (SEEN_GREEN[0] - SEEN_GREY) * g; c1 = SEEN_GREY + (SEEN_GREEN[1] - SEEN_GREY) * g; c2 = SEEN_GREY + (SEEN_GREEN[2] - SEEN_GREY) * g;
+          const k = rr * n + cc;
+          landRgb(L.elev[k], L.slope[k], L.grass[k], L.water[k], L.snow[k], rgb);
+          c0 = rgb[0] / 255 - 0.5; c1 = rgb[1] / 255 - 0.5; c2 = rgb[2] / 255 - 0.5;
         }
         buf[p++] = SEEN_GREY + (c0 - SEEN_GREY) * f; buf[p++] = SEEN_GREY + (c1 - SEEN_GREY) * f; buf[p++] = SEEN_GREY + (c2 - SEEN_GREY) * f;
       }
@@ -601,6 +611,7 @@ export class World {
 
   /** What an animal sees and decides right now, without changing anything. */
   brain(org) {
+    this.land.ensureLight(this.clim);
     this.look(org.r, org.c, this.in9);
     const input = Float32Array.from(this.in9);
     if (org.energy <= 1) return { k: 9, input, layers: [], act: false, why: 'too weak to act' };
@@ -737,6 +748,7 @@ export class World {
 
   /** Every animal that can act looks, thinks and picks a step and a place to breed, all from the world as it stands at the start of the step. Stored in `dec`: the step (0-8) and the breeding cell (0-8) times 16, or 255 for nothing. */
   decide(list) {
+    this.land.ensureLight(this.clim);
     for (const a of list) {
       if (a.energy <= 1) { a.dec = 255; continue; }
       this.look(a.r, a.c, this.in9);
@@ -766,6 +778,9 @@ export class World {
           }
           a.energy -= cost - REST;   // trying costs the same whether or not it works
           this.land.heat(a.r * n + a.c, cost - REST);
+        } else {
+          const here = a.r * n + a.c, tread = this.swim * Math.min(1, W[here] / this.swimDepth);   // staying put in water deep enough to swim is not rest: it keeps itself afloat
+          if (tread > 0) { a.energy -= tread; this.land.heat(here, tread); }
         }
         if (a.energy > 100) {
           const bi = ((bk / 3) | 0) - 1, bj = (bk % 3) - 1;

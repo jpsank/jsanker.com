@@ -150,6 +150,7 @@ survives), so OpenChat starts empty. Tests: `docker run --rm -v "$PWD/openchat-a
 Static: no server code, everything runs in the visitor's browser from the files under `public/projects/yellowstone/`.
 Yellowstone is a JavaScript rebuild of the NEAT simulation in github.com/jpsank/thesis, on a 400 x 400 map of the real ground of the Greater Yellowstone area (600 km square, 1.5 km cells) with water, snow, ground temperature, wolves, days and seasons added
 (`land.js` is the ground: height, water, snow, nitrogen, temperature and grass, with a ledger that checks the totals, and the sun and climate row by row; `sim.js` is the animals; neither has a DOM). `terrain.js` is the heights, built by `scripts/yellowstone/build-terrain.py` from the public Terrain Tiles on AWS Open Data (it needs only the Python standard library, and fetches about fifty 70 KB tiles).
+`lakes.js` is the lake depths on the map, worked out from the elevation data alone by `scripts/yellowstone/lakes.py` (find the flat patches, depth from the volume-area scaling law, bowl-shaped bed) and `scripts/yellowstone/build-lakes.py`.
 `gpu.js` runs the ground and every animal's brain as WebGPU compute shaders when the browser has WebGPU (the CPU code in `land.js` and `sim.js` is the fallback and the reference: a run on the card matches it to 32-bit rounding).
 Its modules are served `no-cache` by Caddy, like ProTop's.
 
