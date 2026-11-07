@@ -1,4 +1,4 @@
-// The ground: elevation, water, nitrogen and temperature on every cell of a map that wraps east and west and has walls to the north and south.
+// The ground: height, water, snow, nitrogen, grass and ground temperature on every cell of a map with walls on all four sides (real elevation data, see terrain.js).
 //
 // Precipitation falls evenly, more in wetter months, as rain, or as snow where it is cold (higher ground is colder, so it snows there
 // first and stays longest). Snow piles up and melts at a rate that grows with how far the air is above freezing; the meltwater
@@ -11,7 +11,11 @@
 // (the plant holds it until it dies back, or is eaten); an animal standing on a cell shades it, so nothing grows there; and
 // grass does not grow when the cell is flooded, dried out or frozen.
 //
-// This file has no DOM in it.
+// The ground temperature follows the air above it (colder up the hill, warmer in sun-facing slopes) and conducts to the cells around it; it melts the snow,
+// slows the grass and is warmed by the animals standing on it.
+//
+// This file is the CPU version, and the reference. With WebGPU gpu.js runs the same passes as compute shaders (and the animals' effects on the ground
+// are collected here as deltas, see `delta`). This file has no DOM in it.
 import { makeRng } from './sim.js';
 
 // Average precipitation by month (inches of water, snow melted) at Mammoth, Yellowstone's driest and warmest corner, from NOAA's climate
@@ -35,8 +39,8 @@ export function dayOfYear(t, dayLength, yearDays) {
   return (172 + (365 * (t % (dayLength * yearDays))) / (dayLength * yearDays)) % 365;
 }
 
-/** The latitude of a row: the top of the map is 65 degrees north and the bottom 25, with Yellowstone's 45 in the middle. */
-export const latOfRow = (r, n) => 65 - (40 * r) / (n - 1);
+/** The latitude of a row: by default the top of the map is 65 degrees north and the bottom 25, with Yellowstone's 45 in the middle. */
+export const latOfRow = (r, n, top = 65, bottom = 25) => top - ((top - bottom) * r) / (n - 1);
 
 /** How wet a latitude is next to the middle of the map: dry in the south, wettest through the middle, drier again in the far north. */
 const rainScale = (lat) => (0.6 + 0.4 * Math.exp(-(((lat - 50) / 15) ** 2))) / (0.6 + 0.4 * Math.exp(-((-5 / 15) ** 2)));
@@ -57,7 +61,7 @@ export const equationOfTime = (N) => { const B = (2 * Math.PI * (N - 81)) / 365;
  * latitude and swings more between summer and winter further north. `rain` is how wet the row's latitude is, and `wet` how wet the month is.
  * `rainSwing` is how much of the real rainfall seasonality to keep (1 = all of it, 0 = none).
  */
-export function climateRows(t, n, dayLength = 60, yearDays = 30, rainSwing = 1) {
+export function climateRows(t, n, dayLength = 60, yearDays = 30, rainSwing = 1, top = 65, bottom = 25) {
   const day = (2 * Math.PI * t) / dayLength, yr = day / yearDays;   // `day` is the clock's hour angle: 0 at noon (local solar time)
   const season = Math.cos(yr);   // 1 at midsummer, -1 at midwinter
   const doy = dayOfYear(t, dayLength, yearDays);   // day 1 is 1 January, so the start (21 June) is day 172
@@ -69,7 +73,7 @@ export function climateRows(t, n, dayLength = 60, yearDays = 30, rainSwing = 1) 
   const sun = new Float64Array(n), temp = new Float64Array(n), rain = new Float64Array(n);
   const east = new Float64Array(n), north = new Float64Array(n), up = new Float64Array(n);
   for (let r = 0; r < n; r++) {
-    const lat = latOfRow(r, n), phi = (lat * Math.PI) / 180, sp = Math.sin(phi), cp = Math.cos(phi);
+    const lat = latOfRow(r, n, top, bottom), phi = (lat * Math.PI) / 180, sp = Math.sin(phi), cp = Math.cos(phi);
     up[r] = sp * sd + cp * cd * ch;
     east[r] = -cd * sh;
     north[r] = sd * cp - cd * sp * ch;
@@ -122,27 +126,35 @@ export class Land {
     this.regrow = opts.regrow ?? 0.04;
     this.waterPer = opts.waterPer ?? 0.3;
     this.nPer = opts.nPer ?? 0.02;
+    this.bury = opts.bury ?? 4;   // the depth of snow that buries the grass completely
     this._g = new Float64Array(size);
     this._w = new Float64Array(size);
     this._n = new Float64Array(size);
-    this.makeTerrain();
+    this.cellRun = null;
+    if (opts.terrain) this.loadTerrain(opts.terrain, opts); else this.makeTerrain();
     // which way each cell's slope faces, for the sun: the unit normal to the ground (east, north, up). `run` is how far across a cell is in the same
     // units as height, so it sets how steep the hills really are.
-    this.run = opts.run ?? 1;
+    this.run = opts.run ?? this.cellRun ?? 1;
     this.nE = new Float32Array(size); this.nN = new Float32Array(size); this.nU = new Float32Array(size);
     for (let i = 0; i < size; i++) {
       const gx = (this.elev[this.nb(i, 1)] - this.elev[this.nb(i, 3)]) / (2 * this.run), gy = (this.elev[this.nb(i, 0)] - this.elev[this.nb(i, 2)]) / (2 * this.run);
       const m = Math.hypot(gx, gy, 1);
       this.nE[i] = -gx / m; this.nN[i] = -gy / m; this.nU[i] = 1 / m;
     }
+    this.nbr = new Int32Array(4 * size);   // the four neighbours (up, right, down, left) of every cell, so the hot loops need no division
+    for (let i = 0; i < size; i++) for (let d = 0; d < 4; d++) this.nbr[4 * i + d] = this.nb(i, d);
     this.light = new Float32Array(size);   // the sunlight each cell gets now: slopes facing the sun get more than flat ground, slopes facing away less
     this.flat = new Float64Array(n);       // ...and what flat ground at each row gets
     this.sunWarm = opts.sunWarm ?? 10;     // degrees a cell's ground is warmed (or cooled) for each unit of sun it gets above (or below) flat ground
-    // the river leaves the park through the lowest ground: water that reaches it drains away, with the nitrogen dissolved in it
+    // the river leaves the map: water that reaches the outlet (the lowest ground, or on a real map the edges) drains away, with the nitrogen dissolved in it
     this.outlet = new Uint8Array(size);
-    const sorted = Float64Array.from(this.elev).sort();
-    const cut = sorted[Math.floor((opts.outletShare ?? 0.03) * size)];
-    for (let i = 0; i < size; i++) if (this.elev[i] <= cut) this.outlet[i] = 1;
+    if (opts.terrain) {   // a real map: rivers leave across its edges
+      for (let i = 0; i < size; i++) { const r = (i / n) | 0, c = i - r * n; if (r === 0 || c === 0 || r === n - 1 || c === n - 1) this.outlet[i] = 1; }
+    } else {
+      const sorted = Float64Array.from(this.elev).sort();
+      const cut = sorted[Math.floor((opts.outletShare ?? 0.03) * size)];
+      for (let i = 0; i < size; i++) if (this.elev[i] <= cut) this.outlet[i] = 1;
+    }
     this.outletRate = opts.outletRate ?? 0.3;
     this.chill = new Float64Array(size);   // how much colder than the valley floor each cell is
     const meanElev = this.sum(this.elev) / size;   // the temperature the page shows is the one at the map's average height
@@ -164,6 +176,7 @@ export class Land {
     this.start = { water: this.sum(this.water), nitrogen: this.sum(this.nitrogen) + this.nPer * this.sum(this.grass) };
     this.ledger = { rain: 0, evap: 0, seep: 0, river: 0, uptake: 0, nIn: 0, nLeach: 0 };
     this.raining = false;
+    this.dev = null;   // the GPU side (gpu.js), when the ground runs there
   }
 
   sum(a) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s; }
@@ -237,6 +250,27 @@ export class Land {
     this.normalise();
   }
 
+  /**
+   * The ground from real elevation data (see terrain.js): `T.metres` is n x n heights in metres, 16 bits each, top row north. They are rescaled
+   * to run from 0 to `relief`, so a unit of height is (highest - lowest) / relief metres. Heights and across-the-cell distances then share a unit, which
+   * sets how steep the slopes are, and the air cools 6.5 degrees for every kilometre of height. Only the pits too shallow to be real are filled.
+   */
+  loadTerrain(T, opts) {
+    const n = this.n, size = n * n;
+    if (T.n !== n) throw new Error(`the terrain is ${T.n} cells across, the map ${n}`);
+    const bin = atob(T.metres);
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < size; i++) { const m = bin.charCodeAt(i * 2) | (bin.charCodeAt(i * 2 + 1) << 8); this.elev[i] = m; if (m < lo) lo = m; if (m > hi) hi = m; }
+    const metresPerUnit = (hi - lo) / this.relief;
+    this.metresPerUnit = metresPerUnit;
+    this.cellRun = ((T.sideKm * 1000) / n) / metresPerUnit;
+    if (opts.lapse === undefined) this.lapse = (6.5 * metresPerUnit) / 1000;
+    this.pitDepth = opts.pitDepth ?? 0.04;
+    this.normalise();
+    const { F } = this.drainage(this.lowest());
+    for (let i = 0; i < size; i++) if (F[i] - this.elev[i] < this.pitDepth) this.elev[i] = F[i];
+  }
+
   /** Rescale the ground to run from 0 to `relief`. */
   normalise() {
     const E = this.elev;
@@ -253,7 +287,7 @@ export class Land {
 
   dist(i, j) {
     const n = this.n, di = Math.abs(((i / n) | 0) - ((j / n) | 0)), dj = Math.abs((i % n) - (j % n));
-    return di === 1 && (dj === 1 || dj === n - 1) ? Math.SQRT2 : 1;
+    return di === 1 && dj === 1 ? Math.SQRT2 : 1;
   }
 
   /**
@@ -276,8 +310,8 @@ export class Land {
       const r = (i / n) | 0, c = i - r * n;
       for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
         if (!dr && !dc) continue;
-        if (r + dr < 0 || r + dr >= n) continue;   // the north and south edges are walls
-        const j = (r + dr) * n + ((c + dc + n) % n);
+        if (r + dr < 0 || r + dr >= n || c + dc < 0 || c + dc >= n) continue;   // the edges of the map are walls
+        const j = (r + dr) * n + c + dc;
         if (done[j]) continue;
         const v = Math.max(E[j], F[i] + 1e-5);
         if (v < F[j]) { F[j] = v; down[j] = i; push(v, j); }
@@ -286,14 +320,24 @@ export class Land {
     return { F, down, order };
   }
 
-  /** The cell `d` steps away (0 up, 1 right, 2 down, 3 left) from cell i. East and west wrap round; the north and south edges are walls, and a step into one stays put. */
+  /** The cell `d` steps away (0 up, 1 right, 2 down, 3 left) from cell i. The edges of the map are walls, and a step into one stays put. */
   nb(i, d) {
     const n = this.n, r = (i / n) | 0, c = i - r * n;
-    return d === 0 ? (r > 0 ? i - n : i) : d === 2 ? (r < n - 1 ? i + n : i) : d === 1 ? (c < n - 1 ? i + 1 : i - n + 1) : (c > 0 ? i - 1 : i + n - 1);
+    return d === 0 ? (r > 0 ? i - n : i) : d === 2 ? (r < n - 1 ? i + n : i) : d === 1 ? (c < n - 1 ? i + 1 : i) : (c > 0 ? i - 1 : i);
+  }
+
+  /** When the ground runs on the GPU, what the animals do to it (grass eaten, nitrogen dropped, heat given off) is collected here, per cell, and sent up with the next step. */
+  delta(i, k, v) {
+    const D = this.dev;
+    if (!D.seen[i]) { D.seen[i] = 1; D.touched.push(i); }
+    D.dl[4 * i + k] += v;
   }
 
   /** An animal burned `energy` at cell i: it is given off as heat into the ground there. */
-  heat(i, energy) { this.soil[i] += (this.heatGain * energy) / this.capacity(i); }
+  heat(i, energy) {
+    this.soil[i] += (this.heatGain * energy) / this.capacity(i);
+    if (this.dev) this.delta(i, 2, energy);
+  }
 
   /** How much heat it takes to warm cell i by a degree: wet ground and ponds change temperature slowly, because water has a high specific heat. */
   capacity(i) { return 1 + this.waterHeat * Math.min(this.waterHeatMax, this.water[i]); }
@@ -324,12 +368,33 @@ export class Land {
       const mid = r * n, up = r > 0 ? mid - n : mid, dn = r < n - 1 ? mid + n : mid;   // (a wall counts as the cell itself)
       const air = this.rowTemp[r], flat = this.flat[r];
       for (let c = 0; c < n; c++) {
-        const l = (c + n - 1) % n, rt = (c + 1) % n, i = mid + c;
+        const l = c > 0 ? c - 1 : c, rt = c < n - 1 ? c + 1 : c, i = mid + c;
         const around = S[up + l] + S[up + c] + S[up + rt] + S[mid + l] + S[mid + rt] + S[dn + l] + S[dn + c] + S[dn + rt];
         T[i] = S[i] + (lag * (air - chill[i] + this.sunWarm * (this.light[i] - flat) - S[i]) + k * around - this.soilConduct * S[i]) / this.capacity(i);
       }
     }
     this.soil = T; this._s = S;
+  }
+
+  /**
+   * The part of a step that stays on the CPU when the ground runs on the GPU: the sun (the picture needs it), whether it rains (the random numbers
+   * stay in one place), and the totals that are known without looking at the cells. Returns what the GPU needs: the first step also needs the ground temperature set.
+   */
+  gpuPrep(clim) {
+    this.sunlight(clim);
+    this.rowTemp = clim.temp;
+    this.temp = clim.temp[(this.n - 1) >> 1];
+    const n = this.n, size = n * n;
+    let fresh = false;
+    if (this.soilFresh) { for (let i = 0; i < size; i++) this.soil[i] = this.rowTemp[this.row[i]] - this.chill[i]; this.soilFresh = false; fresh = true; }
+    this.raining = this.rng.next() < this.rainChance * clim.wet;
+    if (this.raining) {
+      let fell = 0;
+      for (let r = 0; r < n; r++) fell += this.rainDepth * clim.wet * clim.rain[r];
+      this.ledger.rain += fell * n;
+    }
+    this.ledger.nIn += this.deposit * size;
+    return fresh;
   }
 
   /** One step of weather and water. `clim` comes from climateRows. */
@@ -376,7 +441,7 @@ export class Land {
     this.ledger.seep += soaked;
 
     // --- flow: water runs to lower neighbours in proportion to the drop in water surface, taking its nitrogen with it
-    const nw = this._w, nn = this._n, K = this.flow;
+    const nw = this._w, nn = this._n, K = this.flow, nbr = this.nbr;
     for (let sub = 0; sub < this.flowSteps; sub++) {
       nw.set(W); nn.set(N);
       for (let i = 0; i < size; i++) {
@@ -384,7 +449,7 @@ export class Land {
         if (w <= 0) continue;
         const s = E[i] + w;
         let f0 = 0, f1 = 0, f2 = 0, f3 = 0, total = 0;
-        const j0 = this.nb(i, 0), j1 = this.nb(i, 1), j2 = this.nb(i, 2), j3 = this.nb(i, 3);
+        const j0 = nbr[4 * i], j1 = nbr[4 * i + 1], j2 = nbr[4 * i + 2], j3 = nbr[4 * i + 3];
         let d = s - (E[j0] + W[j0]); if (d > 0) { f0 = K * d; total += f0; }
         d = s - (E[j1] + W[j1]); if (d > 0) { f1 = K * d; total += f1; }
         d = s - (E[j2] + W[j2]); if (d > 0) { f2 = K * d; total += f2; }
@@ -420,7 +485,7 @@ export class Land {
       const v = nn[i], l = v * lost, m = v * D * 0.25;
       leached += l;
       N[i] += v - l - 4 * m;
-      N[this.nb(i, 0)] += m; N[this.nb(i, 1)] += m; N[this.nb(i, 2)] += m; N[this.nb(i, 3)] += m;
+      N[nbr[4 * i]] += m; N[nbr[4 * i + 1]] += m; N[nbr[4 * i + 2]] += m; N[nbr[4 * i + 3]] += m;
     }
     this.ledger.nLeach += leached;
 
@@ -439,7 +504,7 @@ export class Land {
   /** Grass: growth (drinking and taking nitrogen), dying back (giving nitrogen back as litter), and seeds spreading in. */
   grow(clim, occupied) {
     const n = this.n, size = n * n, G = this.grass, G0 = this._g, W = this.water, N = this.nitrogen;
-    const chill = this.chill;
+    const chill = this.chill, nbr = this.nbr;
     G0.set(G);
     let drunk = 0;
     for (let i = 0; i < size; i++) {
@@ -450,7 +515,7 @@ export class Land {
       if (lose > 0) { G[i] -= lose; N[i] += lose * this.nPer; }
       if (occupied && occupied[i]) continue;   // an animal standing here blocks the light
       if (this.snow[i] > 0.02) continue;       // and so does snow
-      const nb = (G0[this.nb(i, 0)] + G0[this.nb(i, 1)] + G0[this.nb(i, 2)] + G0[this.nb(i, 3)]) / 4;
+      const nb = (G0[nbr[4 * i]] + G0[nbr[4 * i + 1]] + G0[nbr[4 * i + 2]] + G0[nbr[4 * i + 3]]) / 4;
       const base = g + 0.5 * nb + 0.002;     // the plant itself, seed blowing in from the neighbours, and a trace of seed in the soil
       const light = this.light[i] * Math.min(1, Math.max(0, tl / 12));   // no growth in the dark or below freezing
       let grow = this.regrow * light * m * (N[i] / (N[i] + 0.03)) * base * (1 - g / this.gMax);
@@ -463,10 +528,14 @@ export class Land {
     this.ledger.uptake += drunk;
   }
 
+  /** How much of the grass on cell i an animal can get at: all of it on bare ground, none when buried under snow `bury` deep. */
+  open(i) { return Math.max(0, 1 - this.snow[i] / this.bury); }
+
   /** An animal eats up to `amount` of the grass on cell i. Returns { grass, nitrogen }: what was eaten and the nitrogen that went with it. */
   graze(i, amount) {
     const x = Math.min(amount, this.grass[i]);
     this.grass[i] -= x;
+    if (this.dev && x > 0) this.delta(i, 0, x);
     return { grass: x, nitrogen: x * this.nPer };
   }
 
@@ -482,7 +551,7 @@ export class Land {
 
   /** Droppings and carcasses put nitrogen back in the soil of cell i. (It was counted when it left the soil, so this is not new nitrogen.) */
   fertilise(i, amount) {
-    this.nitrogen[i] += amount;
+    if (this.dev) this.delta(i, 1, amount); else this.nitrogen[i] += amount;
   }
 
   /** Check the books. `animalNitrogen` is the nitrogen the animals are carrying (eaten and not yet returned). Errors should be ~0. */

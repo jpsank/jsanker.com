@@ -1,6 +1,7 @@
 // Yellowstone: the page. The simulation itself is in sim.js; nothing here talks to a server.
 import { World } from './sim.js';
 import { createBrainPanel } from './brain.js';
+import { createGpu } from './gpu.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 const $ = (id) => document.getElementById(id);
@@ -119,16 +120,19 @@ function animalColour(o) {
   else if (o.energy < 20) c = [c[0] + (255 - c[0]) * 0.5, c[1] + (255 - c[1]) * 0.5, c[2] + (255 - c[2]) * 0.5];
   return c;
 }
-const WOLVES = 80;   // how many the button releases: the 20 of the old 100 x 100 map, for four times the ground (the label is set from this)
+const WOLVES = 320;   // how many the button releases: the 20 of the old 100 x 100 map, for sixteen times the ground (the label is set from this)
 
-function init() {
+async function init() {
   const canvas = $('gp-canvas');
   if (!canvas) return;
+  const gpu = await createGpu();   // null when this browser has no WebGPU: everything then runs on the CPU, as before
   const ctx = canvas.getContext('2d');
   let img = null;
   const btnRun = $('gp-run'), btnStep = $('gp-step'), btnReset = $('gp-reset'), btnWolves = $('gp-wolves');
   const seedIn = $('gp-seed'), speedIn = $('gp-speed');
-  const mating = $('gp-mating'), movesBody = $('gp-moves');
+  const mating = $('gp-mating'), movesBody = $('gp-moves'), useGpu = $('gp-gpu');
+  useGpu.checked = !!gpu; useGpu.disabled = !gpu;
+  if (!gpu) useGpu.parentElement.title = 'This browser has no WebGPU, so the ground and the brains run on the CPU.';
   const movesCells = [];
   for (let r = 0; r < 3; r++) {
     const tr = h('tr');
@@ -140,38 +144,46 @@ function init() {
   const brain = createBrainPanel($('gp-brain'));
   let world = null, running = false, redrawChart = null, redrawGrass = null, lastChart = 0, lastRate = { at: performance.now(), t: 0, sps: 0 };
 
-  const mix = (a, b, f) => [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
-  const EARTH = [222, 212, 186], GREEN = [52, 152, 84], WATER = [48, 112, 214], SOIL_N = [176, 96, 28];
+  const mix = (dst, a, b, f) => { dst[0] = a[0] + (b[0] - a[0]) * f; dst[1] = a[1] + (b[1] - a[1]) * f; dst[2] = a[2] + (b[2] - a[2]) * f; };   // (dst may be a or b)
+  const EARTH = [222, 212, 186], GREEN = [52, 152, 84], WATER = [48, 112, 214], SOIL_N = [176, 96, 28], PALE = [236, 236, 230], SNOW = [250, 252, 255], COLD = [59, 130, 196], WARM = [235, 104, 52];
+  const shown = [0, 0, 0];
 
-  /** The ground under cell i for the chosen layer: shaded relief with grass and ponds on it, or one layer on its own. */
-  function ground(i, layer, L) {
+  /** The ground under cell i for the chosen layer, written into `col`: shaded relief with grass and ponds on it, or one layer on its own. */
+  function ground(i, layer, L, col) {
     const n = L.n, r = (i / n) | 0, c = i - r * n;
-    const shade = 0.5 + 0.9 * (L.elev[i] - L.elev[Math.max(0, r - 1) * n + ((c + n - 1) % n)]);
+    const shade = 0.5 + 0.9 * (L.elev[i] - L.elev[Math.max(0, r - 1) * n + Math.max(0, c - 1)]);
     // the Height layer is lit from the north-west so the shape of the land reads; every other layer is lit by the sun where it really is
     const lit = layer === 'elevation' ? 0.2 * shade : 0.8 * (L.light[i] - L.flat[r]);
     const relief = Math.max(0, Math.min(1.25, 0.55 + 0.05 * L.elev[i] + lit));
-    let col = [EARTH[0] * relief, EARTH[1] * relief, EARTH[2] * relief];
-    if (layer === 'elevation') return col;
-    if (layer === 'grass' || layer === 'land') col = mix(layer === 'grass' ? EARTH : col, GREEN, Math.min(0.95, L.grass[i] / 4));
-    if (layer === 'water' || layer === 'land') col = mix(layer === 'water' ? [236, 236, 230] : col, WATER, Math.min(layer === 'water' ? 0.9 : 0.8, L.water[i] / (layer === 'water' ? 2.5 : 1.8)));
-    if (layer === 'nitrogen') col = mix([236, 236, 230], SOIL_N, Math.min(0.85, L.nitrogen[i] / 0.6));
+    col[0] = EARTH[0] * relief; col[1] = EARTH[1] * relief; col[2] = EARTH[2] * relief;
+    if (layer === 'elevation') return;
+    if (layer === 'grass' || layer === 'land') mix(col, layer === 'grass' ? EARTH : col, GREEN, Math.min(0.95, L.grass[i] / 4));
+    if (layer === 'water' || layer === 'land') mix(col, layer === 'water' ? PALE : col, WATER, Math.min(layer === 'water' ? 0.9 : 0.8, L.water[i] / (layer === 'water' ? 2.5 : 1.8)));
+    if (layer === 'nitrogen') mix(col, PALE, SOIL_N, Math.min(0.85, L.nitrogen[i] / 0.6));
     if (layer === 'temperature') {   // ground temperature: blue below freezing, pale at about 8 degrees, orange when warm
       const t = L.tempAt(i);
-      col = t < 8 ? mix([236, 236, 230], [59, 130, 196], Math.min(1, (8 - t) / 20)) : mix([236, 236, 230], [235, 104, 52], Math.min(1, (t - 8) / 20));
+      if (t < 8) mix(col, PALE, COLD, Math.min(1, (8 - t) / 20)); else mix(col, PALE, WARM, Math.min(1, (t - 8) / 20));
     }
-    if (layer === 'snow') col = mix(col, [250, 252, 255], Math.min(0.95, L.snow[i] / 0.8));
-    if (layer === 'land') col = mix(col, [250, 252, 255], Math.min(0.9, L.snow[i] / 0.8));   // snow lies over everything
-    return col;
+    if (layer === 'snow') mix(col, col, SNOW, Math.min(0.95, L.snow[i] / 0.8));
+    if (layer === 'land') mix(col, col, SNOW, Math.min(0.9, L.snow[i] / 0.8));   // snow lies over everything
   }
 
+  // The ground changes slowly and the animals every step, so the ground is repainted every few steps (or when the layer changes) and only the animals each frame.
+  let groundData = null, groundAt = 0, groundWorld = null, groundLayer = '';
   function paint() {
-    const d = img.data, grid = world.grid, L = world.land, layer = layerIn.value;
-    for (let i = 0; i < grid.length; i++) {
-      const o = grid[i], p = i * 4;
-      let c;
-      if (!o) c = ground(i, layer, L);
-      else c = animalColour(o);
-      d[p] = c[0]; d[p + 1] = c[1]; d[p + 2] = c[2]; d[p + 3] = 255;
+    const d = img.data, L = world.land, layer = layerIn.value, n = world.n;
+    if (groundWorld !== world || groundLayer !== layer || world.t - groundAt >= 6 || world.t < groundAt) {
+      if (!groundData || groundData.length !== d.length) groundData = new Uint8ClampedArray(d.length);
+      for (let i = 0, p = 0; i < n * n; i++, p += 4) {
+        ground(i, layer, L, shown);
+        groundData[p] = shown[0]; groundData[p + 1] = shown[1]; groundData[p + 2] = shown[2]; groundData[p + 3] = 255;
+      }
+      groundAt = world.t; groundWorld = world; groundLayer = layer;
+    }
+    d.set(groundData);
+    for (const o of world.animals.values()) {
+      const c = animalColour(o), p = (o.r * n + o.c) * 4;
+      d[p] = c[0]; d[p + 1] = c[1]; d[p + 2] = c[2];
     }
     ctx.putImageData(img, 0, 0);
     const o = brain.selected;
@@ -204,15 +216,24 @@ function init() {
       (world.land.raining ? ' · raining' : '') + (gone ? ' · everyone is dead' : '');
   }
 
-  function frame() {
-    if (!running) return;
-    const budget = 14, start = performance.now(), per = +speedIn.value;
-    for (let i = 0; i < per && performance.now() - start < budget; i++) world.step();
+  let busy = false;   // a frame's steps are still being worked out (on the graphics card they finish a moment after they are asked for)
+  /** The nitrogen picture needs the nitrogen, which the graphics card only hands over when asked. */
+  async function pull(w) { if (w.gpu && layerIn.value === 'nitrogen') await w.gpu.syncNitrogen(); }
+
+  async function frame() {
+    if (!running || busy) return;
+    busy = true;
+    const w = world, budget = 14, start = performance.now(), per = +speedIn.value;
+    try {
+      for (let i = 0; i < per && performance.now() - start < budget; i++) await w.advance();
+      await pull(w);
+    } finally { busy = false; }
+    if (w !== world) return;   // a new run began meanwhile
     paint(); status();
     const now = performance.now();
     if (now - lastChart > 250) { redrawChart(); redrawGrass(); lastChart = now; }
     if (world.animals.size === 0 && world.t > 0) { setRunning(false); redrawChart(); redrawGrass(); return; }
-    requestAnimationFrame(frame);
+    if (running) requestAnimationFrame(frame);
   }
 
   function setRunning(on) {
@@ -226,7 +247,8 @@ function init() {
   function reset() {
     const seed = Math.max(0, Math.floor(+seedIn.value) || 0);
     brain.clear();
-    world = new World({ seed, mating: mating.checked });
+    world?.dispose();
+    world = new World({ seed, mating: mating.checked, gpu: useGpu.checked ? gpu : null });
     canvas.width = canvas.height = world.n;
     img = ctx.createImageData(world.n, world.n);
     paint(); status();
@@ -245,9 +267,14 @@ function init() {
     if (world.animals.size === 0 && world.t > 0) reset();
     setRunning(!running);
   });
-  btnStep.addEventListener('click', () => {
+  btnStep.addEventListener('click', async () => {
     setRunning(false);
-    world.step(); paint(); brain.update(world, true); status(); redrawChart(); redrawGrass();
+    if (busy) return;
+    busy = true;
+    const w = world;
+    try { await w.advance(); await pull(w); } finally { busy = false; }
+    if (w !== world) return;
+    paint(); brain.update(world, true); status(); redrawChart(); redrawGrass();
   });
   btnReset.addEventListener('click', reset);
   seedIn.addEventListener('change', reset);
@@ -255,7 +282,8 @@ function init() {
     world.releaseWolves(WOLVES);
     paint(); status(); redrawChart(); redrawGrass();
   });
-  layerIn.addEventListener('change', paint);
+  layerIn.addEventListener('change', async () => { await pull(world); paint(); });
+  useGpu.addEventListener('change', reset);
   mating.addEventListener('change', () => { if (world) world.mating = mating.checked; });
 
   canvas.addEventListener('click', (ev) => {

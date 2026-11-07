@@ -1,14 +1,16 @@
 // Yellowstone: a rebuild of evo/ from github.com/jpsank/thesis in plain JavaScript, with terrain, water, wolves, days and seasons added.
 //
-// Animals live on a 200x200 map of land (land.js: elevation, water, nitrogen and grass on every cell). Each animal carries a
+// Animals live on a 400x400 map of land, with walls all round (land.js: elevation, water, nitrogen and grass on every cell). Each animal carries a
 // genome: a small network (a CPPN) that is never run on the world directly. Instead it is queried once per pair of
 // neurons of a fixed "substrate" to paint the weights of the network that does the sensing and acting (HyperNEAT-style).
 // An animal sees a 9x9 patch of colours and answers with how much it wants to step to each of the nine cells around it (weighed
-// against what the step costs, so climbing is dear) and where to breed. A diet gene, from 0 (digests grass) to 1 (digests meat),
+// against what the step costs, so climbing is dear) and where to breed. Every animal decides from the same snapshot of the world at the start of the step (decide), then they act one at a time in a random order (act).
+// With WebGPU the ground and the decisions are worked out on the graphics card (gpu.js); everything else, including acting, is here either way. A diet gene, from 0 (digests grass) to 1 (digests meat),
 // decides what it can live on; hunters are the ones whose diet has moved toward meat.
 //
 // This file has no DOM in it. app.js draws it.
 import { Land, climateRows, dayOfYear } from './land.js';
+import { TERRAIN } from './terrain.js';
 
 /* ------------------------------------------------------------------ random numbers */
 
@@ -142,11 +144,11 @@ const ACT_FN = [
 ];
 
 /**
- * Compile a genome into a function of six numbers that returns output 0.
+ * The tables a genome compiles to: nodes in the order they fire, and for each its activation, bias and incoming connections.
  * Same rules as the original: only nodes on a path to an output are kept, and a node is computed once all
  * of its sources have been, so nodes caught in a cycle never fire and read as 0.
  */
-function compileCppn(g) {
+function cppnTables(g) {
   const incoming = new Map();
   for (const e of g.edges.values()) {
     if (!incoming.has(e.t)) incoming.set(e.t, []);
@@ -194,7 +196,6 @@ function compileCppn(g) {
   for (let i = 0; i < N_IN; i++) slot.set(i - N_IN, i);
   order.forEach((n, k) => slot.set(n, N_IN + k));
   const zero = N_IN + order.length;
-  const vals = new Float64Array(zero + 1);
 
   const act = new Uint8Array(order.length);
   const bias = new Float64Array(order.length);
@@ -208,9 +209,13 @@ function compileCppn(g) {
     }
     start[k + 1] = srcs.length;
   });
-  const src = Int32Array.from(srcs), w = Float64Array.from(ws);
-  const out = slot.has(0) ? slot.get(0) : zero;
+  return { act, bias, start, src: Int32Array.from(srcs), w: Float64Array.from(ws), out: slot.has(0) ? slot.get(0) : zero, zero, count: order.length };
+}
 
+/** Compile a genome into a function of six numbers that returns output 0. */
+function compileCppn(g) {
+  const { act, bias, start, src, w, out, zero } = cppnTables(g);
+  const vals = new Float64Array(zero + 1);
   return function cppn(a, b, c, d, e, f) {
     vals[0] = a; vals[1] = b; vals[2] = c; vals[3] = d; vals[4] = e; vals[5] = f;
     for (let k = 0; k < act.length; k++) {
@@ -349,6 +354,79 @@ function buildNet(g, substrate) {
   };
 }
 
+/* ------------------------------------------------------------------ what the GPU needs to build and run the brains */
+
+// A brain is stored as 16-bit numbers, layer by layer: for each layer the weights ordered input-major (so neighbouring GPU threads read
+// neighbouring numbers), then the biases. A genome is sent to the GPU as a small program (see encodeProgram) and the GPU paints the weights.
+const layerSizes = ANIMAL_NET.slice(1).map((d, l) => ({ ni: ANIMAL_NET[l].reduce((a, b) => a * b, 1), nj: l === ANIMAL_NET.length - 2 ? 9 * d[2] : d.reduce((a, b) => a * b, 1) }));
+export const BRAIN = { layers: layerSizes, halves: layerSizes.reduce((a, L) => a + L.ni * L.nj + L.nj, 0) };
+BRAIN.words = BRAIN.halves / 2;
+export const PROGRAM = { maxNodes: 48, maxEdges: 320 };
+PROGRAM.words = 3 + 4 * PROGRAM.maxNodes + 2 * PROGRAM.maxEdges;
+
+const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
+const bitsOf = (x) => { f32[0] = x; return u32[0]; };
+/** Round a number to the nearest 16-bit float, as its bits. */
+function toHalf(x) {
+  f32[0] = x;
+  const b = u32[0], sign = (b >>> 16) & 0x8000, ex = (b >>> 23) & 0xff;
+  let m = b & 0x7fffff, e = ex - 127 + 15;
+  if (ex === 0xff) return sign | 0x7c00 | (m ? 0x200 : 0);
+  if (e >= 31) return sign | 0x7c00;
+  if (e <= 0) {
+    if (e < -10) return sign;
+    m |= 0x800000;
+    const sh = 14 - e, rem = m & ((1 << sh) - 1), half = 1 << (sh - 1);
+    let h = m >>> sh;
+    if (rem > half || (rem === half && (h & 1))) h++;
+    return sign | h;
+  }
+  let h = sign | (e << 10) | (m >>> 13);
+  const rem = m & 0x1fff;
+  if (rem > 0x1000 || (rem === 0x1000 && (h & 1))) h++;
+  return h;
+}
+
+/** Write genome `g` as a program into dst[off ...]: [nodes, output slot, zero slot, then (activation, bias, first edge, last edge) per node, then (source slot, weight) per edge]. False if it is too big for the GPU's fixed-size registers. */
+export function encodeProgram(g, dst, off) {
+  const T = cppnTables(g);
+  if (T.count > PROGRAM.maxNodes || T.w.length > PROGRAM.maxEdges) return false;
+  dst.fill(0, off, off + PROGRAM.words);
+  dst[off] = T.count; dst[off + 1] = T.out; dst[off + 2] = T.zero;
+  for (let k = 0; k < T.count; k++) {
+    const p = off + 3 + 4 * k;
+    dst[p] = T.act[k]; dst[p + 1] = bitsOf(T.bias[k]); dst[p + 2] = T.start[k]; dst[p + 3] = T.start[k + 1];
+  }
+  const e0 = off + 3 + 4 * PROGRAM.maxNodes;
+  for (let j = 0; j < T.w.length; j++) { dst[e0 + 2 * j] = T.src[j]; dst[e0 + 2 * j + 1] = bitsOf(T.w[j]); }
+  return true;
+}
+
+/** A genome's whole brain as packed 16-bit weights, built on the CPU (for the rare genome too big for encodeProgram). */
+export function packNet(g) {
+  const net = buildNet(g, ANIMAL_NET), halves = new Uint16Array(BRAIN.halves);
+  let o = 0;
+  for (const L of net.layers) {
+    for (let i = 0; i < L.ni; i++) for (let j = 0; j < L.nj; j++) halves[o++] = toHalf(L.W[j * L.ni + i]);
+    for (let j = 0; j < L.nj; j++) halves[o++] = toHalf(L.B[j]);
+  }
+  return new Uint32Array(halves.buffer);
+}
+
+/** For every number in a brain, in storage order, the six inputs of the CPPN that paints it: where the receiving neuron is, and where the sending one is. */
+export function connectionTable() {
+  const out = new Float32Array(BRAIN.halves * 6);
+  let o = 0;
+  for (let l = 1; l < ANIMAL_NET.length; l++) {
+    const last = l === ANIMAL_NET.length - 1;
+    const cj = last ? actionCoords(ANIMAL_NET[l][2]) : coordsFor(ANIMAL_NET[l]), ci = coordsFor(ANIMAL_NET[l - 1]);
+    const nj = cj.length / 3, ni = ci.length / 3;
+    for (let i = 0; i < ni; i++) for (let j = 0; j < nj; j++) { for (let q = 0; q < 3; q++) { out[o++] = cj[j * 3 + q]; } for (let q = 0; q < 3; q++) out[o++] = ci[i * 3 + q]; }
+    for (let j = 0; j < nj; j++) { out[o++] = cj[j * 3]; out[o++] = cj[j * 3 + 1]; out[o++] = cj[j * 3 + 2]; out[o++] = -1; out[o++] = 0; out[o++] = 0; }
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------------ the world */
 
 // What the networks see: a cell's colour, normalised the way the original did ((rgb / 255) - 0.5).
@@ -356,7 +434,7 @@ const SEEN_GREY = 128 / 255 - 0.5;
 const SEEN_GREEN = [-0.5, 0.5, -0.5];  // thick grass
 
 const NEIGHBOURS = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]];
-const WALL = 1e30;   // the cost of stepping into the north or south edge of the map
+const WALL = 1e30;   // the cost of stepping off the edge of the map
 const REST = 0.05;   // what it costs just to stay put (part of the basal drain, so only the extra of a move is charged)
 
 /** Animals at 0.5 or more on the diet scale (0 = lives on grass, 1 = lives on meat) are called wolves; the rest, prey. */
@@ -372,13 +450,18 @@ export class World {
    */
   constructor(opts = {}) {
     this.rng = makeRng(opts.seed ?? 1);
-    this.n = opts.size ?? 200;
+    this.n = opts.size ?? TERRAIN.n;
     this.mating = opts.mating ?? true;
     this.dayLength = opts.dayLength ?? 60;
     this.yearDays = opts.yearDays ?? 30;
     this.plantEnergy = opts.plantEnergy ?? 5;
     this.meatShare = opts.meatShare ?? 0.3;
     this.climb = opts.climb ?? 0.1;
+    const terrain = opts.terrain === false || this.n !== TERRAIN.n ? null : opts.terrain ?? TERRAIN;   // the real ground, unless asked for made-up ground
+    this.latTop = opts.latTop ?? (terrain ? terrain.latTop : 65);       // the latitudes of the top and bottom rows of the map
+    this.latBottom = opts.latBottom ?? (terrain ? terrain.latBottom : 25);
+    this.snowCost = opts.snowCost ?? 0.04; // extra energy per unit of snow depth in the cell stepped into (a unit of snow is a few cm of water, so tens of cm of snow)...
+    this.snowCap = opts.snowCap ?? 6;      // ...counted up to this depth
     this.wade = opts.wade ?? 0.05;        // extra energy per unit of water depth in the cell stepped into (capped at 3 deep)
     this.rainSwing = opts.rainSwing ?? 1;      // how much of the real seasonal pattern of rainfall to keep
     this.bite = opts.bite ?? 0.5;         // the most grass an animal takes in one step
@@ -386,7 +469,8 @@ export class World {
     this.digestRate = opts.digestRate ?? 0.25;
     this.bodyN = opts.bodyN ?? 0.5;       // nitrogen in a newly released animal's body
     this.excrete = opts.excrete ?? 0.01;  // share of its body nitrogen an animal passes on each step
-    this.land = new Land({ seed: opts.seed ?? 1, size: this.n, ...(opts.land || {}) });
+    this.land = new Land({ seed: opts.seed ?? 1, size: this.n, terrain, ...(opts.land || {}) });
+    this.gpu = opts.gpu ? opts.gpu.attach(this) : null;   // the ground and the brains run on the graphics card when there is one (see gpu.js)
     this.moves = new Float64Array(9);     // how often animals chose each of the 9 steps (row-major, middle = stay)
     this.t = 0;
     this.climate();
@@ -415,7 +499,7 @@ export class World {
   /** Put `count` new animals with random brains and the given diet on random empty cells. Their nitrogen comes in from outside, and is logged as such. */
   introduce(count, diet) {
     let k = 0;
-    for (let i = 0; i < count && this.animals.size < this.n * this.n; i++) {
+    for (let i = 0; i < count && this.animals.size < this.n * this.n && (!this.gpu || this.gpu.hasRoom()); i++) {
       const o = this.spawn(randomGenome(this.rng), diet);
       o.bodyN = this.bodyN; this.land.ledger.nIn += this.bodyN;
       this.place(o);
@@ -429,7 +513,7 @@ export class World {
 
   /** Day, season, sunlight and temperature from the step count. The world starts at noon in midsummer. */
   climate() {
-    this.clim = climateRows(this.t, this.n, this.dayLength, this.yearDays, this.rainSwing);   // row by row, north to south
+    this.clim = climateRows(this.t, this.n, this.dayLength, this.yearDays, this.rainSwing, this.latTop, this.latBottom);   // row by row, north to south
     const mid = (this.n - 1) >> 1;   // the middle of the map is 45 degrees north, for the clock
     this.sun = this.clim.sun[mid]; this.temp = this.clim.temp[mid];
   }
@@ -452,20 +536,24 @@ export class World {
       id, genome, diet, r: 0, c: 0, energy: 50,
       bodyN: 0, plant: 0, plantN: 0, meat: 0, meatN: 0,   // body nitrogen, and what is in the gut
       col: [0.5, diet - 0.5, -0.5],
-      net: buildNet(genome, ANIMAL_NET),
+      dec: 255,   // what it decided this step (see decide)
+      slot: -1,   // where its brain lives on the GPU
+      _net: null,
+      get net() { return this._net ??= buildNet(this.genome, ANIMAL_NET); },   // (built when something needs to run or draw it on the CPU)
     };
+    if (this.gpu) this.gpu.born(org);
     this.animals.set(id, org);
     return org;
   }
 
   /** The 3 x 3 steps, row-major: which one the brain's output and the costs agree on. Returns [di, dj, index, cost]. */
   choose(a, out) {
-    const n = this.n, E = this.land.elev, W = this.land.water, here = E[a.r * n + a.c];
+    const n = this.n, E = this.land.elev, W = this.land.water, S = this.land.snow, here = E[a.r * n + a.c];
     let best = 4, bv = -Infinity, bc = REST;
     for (let k = 0; k < 9; k++) {
       const di = ((k / 3) | 0) - 1, dj = (k % 3) - 1;
-      const rr = a.r + di, cc = (((a.c + dj) % n) + n) % n;
-      const cost = rr < 0 || rr >= n ? WALL : this.stepCost(di, dj, E[rr * n + cc] - here, W[rr * n + cc]);
+      const rr = a.r + di, cc = a.c + dj;
+      const cost = rr < 0 || rr >= n || cc < 0 || cc >= n ? WALL : this.stepCost(di, dj, E[rr * n + cc] - here, W[rr * n + cc], S[rr * n + cc]);
       // wanting a step twice as much cancels a step that costs twice as much: compare exp(output) / cost
       const v = out[k * 2] - Math.log(cost);
       if (v > bv) { bv = v; best = k; bc = cost; }
@@ -473,10 +561,10 @@ export class World {
     return [((best / 3) | 0) - 1, (best % 3) - 1, best, bc];
   }
 
-  /** Energy a step costs: the effort of acting at all, more for a longer step, more again for each unit of height climbed (going down is free)
-   *  and for wading through water. `depth` is the water on the cell stepped into. */
-  stepCost(di, dj, rise, depth = 0) {
-    return REST + (0.1 * (Math.abs(di) + Math.abs(dj))) / 2 + this.climb * Math.max(0, rise) + this.wade * Math.min(3, depth);
+  /** Energy a step costs: the effort of acting at all, more for a longer step, more again for each unit of height climbed (going down is free),
+   *  for wading through water (`depth` is the water on the cell stepped into) and for ploughing through snow (`snow`, the depth of the pack there). */
+  stepCost(di, dj, rise, depth = 0, snow = 0) {
+    return REST + (0.1 * (Math.abs(di) + Math.abs(dj))) / 2 + this.climb * Math.max(0, rise) + this.wade * Math.min(3, depth) + this.snowCost * Math.min(this.snowCap, snow);
   }
 
   /** Which cell of a 3 x 3 output grid has the strongest signal. `ch` of `chs` picks one of the grid's channels. Returns [di, dj, index]. */
@@ -496,11 +584,11 @@ export class World {
     for (let i = 0; i < 9; i++) {
       const rr = r + i - half;
       for (let j = 0; j < 9; j++) {
-        const cc = (((c + j - half) % n) + n) % n;
-        const o = rr < 0 || rr >= n ? null : this.grid[rr * n + cc];
+        const cc = c + j - half, off = rr < 0 || rr >= n || cc < 0 || cc >= n;
+        const o = off ? null : this.grid[rr * n + cc];
         const f = Math.abs(i - half) <= 1 && Math.abs(j - half) <= 1 ? 1 : far;
         let c0, c1, c2;
-        if (rr < 0 || rr >= n) { c0 = c1 = c2 = -0.5; }   // past the edge of the map: black
+        if (off) { c0 = c1 = c2 = -0.5; }   // past the edge of the map: black
         else if (o) { [c0, c1, c2] = o.col; }
         else {
           const g = Math.min(1, G[rr * n + cc] / 4);
@@ -520,10 +608,10 @@ export class World {
     const layers = org.net.bufs.map((b) => Float32Array.from(b));
     const move = this.choose(org, out);
     const breed = World.argmax9(out, 1, 2);
-    const n = this.n, E = this.land.elev, W = this.land.water, here = E[org.r * n + org.c], costs = [];
+    const n = this.n, E = this.land.elev, W = this.land.water, S = this.land.snow, here = E[org.r * n + org.c], costs = [];
     for (let k = 0; k < 9; k++) {
-      const di = ((k / 3) | 0) - 1, dj = (k % 3) - 1, rr = org.r + di, j = rr * n + ((((org.c + dj) % n) + n) % n);
-      costs.push(rr < 0 || rr >= n ? WALL : this.stepCost(di, dj, E[j] - here, W[j]));
+      const di = ((k / 3) | 0) - 1, dj = (k % 3) - 1, rr = org.r + di, cc = org.c + dj, j = rr * n + cc;
+      costs.push(rr < 0 || rr >= n || cc < 0 || cc >= n ? WALL : this.stepCost(di, dj, E[j] - here, W[j], S[j]));
     }
     return { k: 9, input, layers, act: true, move, breed, costs };
   }
@@ -531,6 +619,7 @@ export class World {
   remove(org) {
     this.grid[org.r * this.n + org.c] = null;
     this.animals.delete(org.id);
+    if (this.gpu) this.gpu.died(org);
   }
 
   /** The nitrogen an animal carries goes back into the soil where it falls. */
@@ -554,7 +643,7 @@ export class World {
     const L = this.land, i = a.r * this.n + a.c;
     const room = this.gutMax - a.plant;
     if (room > 0) {
-      const e = L.graze(i, Math.min(this.bite, room));
+      const e = L.graze(i, Math.min(this.bite * L.open(i), room));   // snow over the grass makes it harder to get at
       if (e.grass > 0) { a.plant += e.grass; a.plantN += e.nitrogen; this.eaten += e.grass; }
     }
     const r = this.digestRate;
@@ -580,6 +669,7 @@ export class World {
     const cost = 25;
 
     const child = (p1, p2, r, c) => {
+      if (this.gpu && !this.gpu.hasRoom()) return;   // (no room left for another brain on the card)
       const g = p1 === p2 ? copyGenome(p1.genome) : crossover(p1.genome, p2.genome, rng);
       mutate(g, rng, this.hiddenIds);
       const diet = Math.min(1, Math.max(0, (p1 === p2 ? p1.diet : (p1.diet + p2.diet) / 2) + rng.normal(0.02)));
@@ -606,8 +696,8 @@ export class World {
           if (r2 === org1.r && c2 === org1.c) {
             const open = [];
             for (const [i, j] of NEIGHBOURS) {
-              const rr = org1.r + i, cc = (((org1.c + j) % n) + n) % n;
-              if (rr >= 0 && rr < n && !this.grid[rr * n + cc]) open.push([rr, cc]);
+              const rr = org1.r + i, cc = org1.c + j;
+              if (rr >= 0 && rr < n && cc >= 0 && cc < n && !this.grid[rr * n + cc]) open.push([rr, cc]);
             }
             if (open.length) {
               const [rr, cc] = rng.pick(open);
@@ -623,33 +713,63 @@ export class World {
     }
   }
 
+  /** One step on the CPU: the ground changes, then every animal looks and decides from the same snapshot of the world, then they act one at a time in a random order. */
   step() {
-    const n = this.n, rng = this.rng;
     this.land.step(this.clim, this.occ);
+    const list = [...this.animals.values()];
+    this.decide(list);
+    this.act(list);
+  }
 
+  /** The same step with the ground and the brains on the graphics card (see gpu.js). Returns a promise. */
+  async stepGpu() {
+    const list = [...this.animals.values()];
+    const res = await this.gpu.step(list);
+    for (let i = 0; i < list.length; i++) list[i].dec = res[i] === 0xffffffff ? 255 : res[i];
+    this.act(list);
+  }
+
+  /** Give back what this world holds on the graphics card. */
+  dispose() { this.gpu?.destroy(); this.gpu = null; }
+
+  /** Take one step, on whichever side this world runs. Always await it. */
+  advance() { return this.gpu ? this.stepGpu() : this.step(); }
+
+  /** Every animal that can act looks, thinks and picks a step and a place to breed, all from the world as it stands at the start of the step. Stored in `dec`: the step (0-8) and the breeding cell (0-8) times 16, or 255 for nothing. */
+  decide(list) {
+    for (const a of list) {
+      if (a.energy <= 1) { a.dec = 255; continue; }
+      this.look(a.r, a.c, this.in9);
+      const out = a.net.forward(this.in9);
+      a.dec = this.choose(a, out)[2] | (World.argmax9(out, 1, 2)[2] << 4);
+    }
+  }
+
+  /** Everyone carries out what they decided, one at a time in a fresh random order (so no one always goes first), then feeds, burns energy, breeds or dies. */
+  act(list) {
+    const n = this.n, rng = this.rng, E = this.land.elev, W = this.land.water, S = this.land.snow;
     const wants = new Map(), dead = [];
-    for (const a of rng.shuffle([...this.animals.values()])) {   // a fresh random order each step, so no one always moves first
+    for (const a of rng.shuffle(list)) {
       if (this.animals.get(a.id) !== a) continue;               // eaten earlier this step
-      if (a.energy > 1) {
-        this.look(a.r, a.c, this.in9);
-        const out = a.net.forward(this.in9);
-        const [di, dj, pick, cost] = this.choose(a, out);
+      if (a.dec !== 255) {
+        const pick = a.dec & 15, bk = a.dec >> 4, di = ((pick / 3) | 0) - 1, dj = (pick % 3) - 1;
         this.moves[pick]++;
         if (di || dj) {
-          const r2 = a.r + di, c2 = (((a.c + dj) % n) + n) % n;   // (the brain never picks a wall)
-          const o = this.grid[r2 * n + c2];
-          if (o) { if (rng.next() < a.diet * a.diet) this.kill(a, o); }   // bumping into someone: a hunter bites, a grazer all but never does
+          const r2 = a.r + di, c2 = a.c + dj, to = r2 * n + c2;   // (the brain never picks a wall)
+          const cost = this.stepCost(di, dj, E[to] - E[a.r * n + a.c], W[to], S[to]);
+          const o = this.grid[to];
+          if (o) { if (rng.next() < a.diet * a.diet) this.kill(a, o); }   // someone is there now: a hunter bites, a grazer all but never does
           else {
             this.grid[a.r * n + a.c] = null;
             a.r = r2; a.c = c2;
-            this.grid[r2 * n + c2] = a;
+            this.grid[to] = a;
           }
           a.energy -= cost - REST;   // trying costs the same whether or not it works
           this.land.heat(a.r * n + a.c, cost - REST);
         }
         if (a.energy > 100) {
-          const [bi, bj] = World.argmax9(out, 1, 2);
-          if (a.r + bi >= 0 && a.r + bi < n) wants.set(a.id, [a.r + bi, (((a.c + bj) % n) + n) % n]);   // (no breeding into a wall)
+          const bi = ((bk / 3) | 0) - 1, bj = (bk % 3) - 1;
+          if (a.r + bi >= 0 && a.r + bi < n && a.c + bj >= 0 && a.c + bj < n) wants.set(a.id, [a.r + bi, a.c + bj]);   // (no breeding into a wall)
         }
       }
       this.feed(a);

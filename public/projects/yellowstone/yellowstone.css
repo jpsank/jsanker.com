@@ -36,8 +36,7 @@
 .gp ul.rules li { margin: .55rem 0; }
 
 /* the simulation */
-.gp .sim { display: grid; grid-template-columns: minmax(0, 22rem) minmax(0, 1fr); gap: 1.2rem; align-items: start; margin: 1rem 0; }
-@media (max-width: 40rem) { .gp .sim { grid-template-columns: minmax(0, 1fr); } }
+.gp .sim { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; align-items: start; margin: 1rem 0; }   /* the map is 400 cells across, so it gets the whole width */
 .gp canvas {
   display: block; width: 100%; aspect-ratio: 1; image-rendering: pixelated;
   background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; cursor: crosshair;
