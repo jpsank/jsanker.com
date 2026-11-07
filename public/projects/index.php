@@ -4,15 +4,20 @@ require_once __DIR__ . '/../../src/layout.php';
 
 page_start([
     'title'       => 'Projects',
-    'description' => 'Personal projects from high school, ported and still running.',
+    'description' => 'Research write-ups, and personal projects from high school, ported and still running.',
     'crumbs'      => [['home', '/'], ['projects', null]],
 ]);
 ?>
 <h1>Projects</h1>
-<p>These are from high school. The PHP ones are the original code, security-patched and moved onto this site.
-For anything more recent, <a href="mailto:julian@sankergroup.org">email me</a>.</p>
+<h2>Research</h2>
+<ul class="plain">
+  <li><a href="/projects/riboswitches/">Riboswitches</a> — can two sodium-binding RNA families be one model? Search results from my 2023 research at the Breaker Lab, and the story of the pipeline.</li>
+</ul>
 
-<h2>Running</h2>
+<h2>High school</h2>
+<p>The PHP projects are the original code, security-patched and moved onto this site.</p>
+
+<h3>Running</h3>
 <ul class="plain">
   <li><a href="/projects/chemcalc/">ChemCalc</a> — thermodynamic properties of molecules and chemical equations (AP Chem), with an equation balancer.</li>
   <li><a href="/openchat/">OpenChat</a> — a Reddit-like social site: accounts, chats, posts, comments and voting. The successor to OpenChat Classic.</li>
@@ -24,7 +29,7 @@ For anything more recent, <a href="mailto:julian@sankergroup.org">email me</a>.<
   <li><a href="https://crimemap.app/">Crime Map</a> — interactive map of 911 dispatches, hosted elsewhere.</li>
 </ul>
 
-<h2>Souvenirs</h2>
+<h3>Souvenirs</h3>
 <p class="muted">The services these depended on are gone, so each is cut down to the part that still works.</p>
 <ul class="plain">
   <li><a href="/projects/hha-grades/">HHA Grades</a> — the grade checker's interface, running on made-up data (the school portal it scraped is gone).</li>

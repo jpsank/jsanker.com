@@ -24,7 +24,7 @@ check() { # path expected_status
 for p in / /projects/ /photos/ /blog/ /projects/chemcalc/ /projects/chemcalc/table.php \
          /projects/openchat/ /projects/apedia/ /projects/speedreed/ /projects/wireworld/ \
          /projects/audiovisual/ /projects/hha-grades/ /projects/umusic/ \
-         /projects/coronariskmap/ /projects/lucas-gifs/ /api/pattern.php /assets/site.css \
+         /projects/coronariskmap/ /projects/lucas-gifs/ /projects/riboswitches/ /projects/riboswitches/data.json /api/pattern.php /assets/site.css \
          /openchat/ /openchat/popular /openchat/chats /openchat/leaderboard /openchat/auth/login \
          /openchat/static/css/style.css; do
   check "$p" 200
