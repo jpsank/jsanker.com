@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required, login_user, logout_user
+from sqlalchemy.exc import IntegrityError
 
 from ..extensions import db
 from ..forms import LoginForm, RegistrationForm
@@ -59,7 +60,13 @@ def register():
         user = User(username=form.username.data)
         user.set_password(form.password.data)
         db.session.add(user)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except IntegrityError:
+            # Someone registered the same name between the form check and the insert; the unique index caught it.
+            db.session.rollback()
+            form.username.errors.append("That username is taken.")
+            return render_template("auth/register.html", title="Register", form=form), 409
         flash("Welcome! You are registered. Sign in to start posting.")
         return redirect(url_for("auth.login"))
     return render_template("auth/register.html", title="Register", form=form)

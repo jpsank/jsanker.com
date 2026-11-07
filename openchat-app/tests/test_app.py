@@ -129,6 +129,16 @@ class Accounts(Base):
         self.assertEqual(r.status_code, 200)
         self.assertIn("taken", r.get_data(as_text=True))
 
+    def test_register_race_gets_a_form_error_not_a_500(self):
+        from unittest import mock
+        from openchat.forms import RegistrationForm
+        self.register("alice")
+        # Skip the up-front "taken" check, as if both requests passed it before either inserted.
+        with mock.patch.object(RegistrationForm, "validate_username", lambda self, field: None):
+            r = self.post("/auth/register", {"username": "Alice", "password": "correct horse", "password2": "correct horse"})
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("taken", r.get_data(as_text=True))
+
     def test_slur_username_rejected(self):
         slur = codecs.decode("avttre", "rot13") + "123"
         r = self.post("/auth/register", {"username": slur, "password": "correct horse", "password2": "correct horse"})
