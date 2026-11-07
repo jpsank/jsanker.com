@@ -7,7 +7,7 @@ Julian Sanker's personal site: plain HTML/PHP, one stylesheet for the new pages,
 ```
 public/            document root (the only thing the web server can see)
   index.php        home
-  projects/        ChemCalc, OpenChat Classic, APedia, Speedreed, WireWorld, Audiovisual, Riboswitches (research write-up), ProTop (front end: plain PHP + ES modules) + cut-down "souvenirs" (HHA Grades, uMusic, CoronaRiskMap, Lucas Gifs)
+  projects/        ChemCalc, OpenChat Classic, APedia, Speedreed, WireWorld, Audiovisual, Riboswitches (research write-up), Yellowstone (a NEAT ecosystem of grass, prey and wolves that runs in the browser), ProTop (front end: plain PHP + ES modules) + cut-down "souvenirs" (HHA Grades, uMusic, CoronaRiskMap, Lucas Gifs)
   blog/            Firebase-backed blog (vanilla ES modules, no React)
   life/            life.js + life.css for the Game of Life on the home page (/life/ redirects home); api/pattern.php serves random RLE patterns
   photos/          photo page
@@ -144,6 +144,13 @@ What changed from the 2019-2020 original (Flask 1.1, Werkzeug 0.16, Flask-Upload
 There was no production database to bring over (the old puffyboa.xyz server is gone and only a 2020 test database
 survives), so OpenChat starts empty. Tests: `docker run --rm -v "$PWD/openchat-app":/src -w /src python:3.13-slim sh -c
 "pip install -q -r requirements.txt && python -m unittest discover -s tests"`.
+
+## Yellowstone
+
+Static: no server code, everything runs in the visitor's browser from the files under `public/projects/yellowstone/`.
+Yellowstone is a JavaScript rebuild of the NEAT simulation in github.com/jpsank/thesis, on a 200 x 200 map with terrain, water, snow, ground temperature, wolves, days and seasons added
+(`land.js` is the ground: height, water, snow, nitrogen, temperature and grass, with a ledger that checks the totals, and the sun and climate row by row from 65 to 25 degrees north; `sim.js` is the animals; neither has a DOM).
+Its modules are served `no-cache` by Caddy, like ProTop's.
 
 ## ProTop
 

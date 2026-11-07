@@ -65,9 +65,9 @@
 	@static path *.css *.js *.svg *.png *.jpg *.jpeg *.gif *.webp *.ico *.woff2
 	header @static Cache-Control "public, max-age=3600"
 
-	# ProTop's ES modules import each other by plain path, so only the entry script is versioned;
+	# ProTop's and Yellowstone's ES modules import each other by plain path, so only the entry script is versioned;
 	# revalidate them (ETag) so a deploy never mixes new and old modules.
-	@protopjs path /projects/protop/js/*
+	@protopjs path /projects/protop/js/* /projects/yellowstone/*.js
 	header @protopjs Cache-Control "no-cache"
 
 	# A .php URL that doesn't exist is a 404, not a PHP fatal

@@ -1,0 +1,103 @@
+/* Yellowstone: chart/mark tokens layered on /assets/site.css */
+
+.gp {
+  --surface: #fcfcfb;
+  --ink-2: #52514e;
+  --ink-3: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --grass: #1baf7a;
+  --prey: #eb6834;
+  --weak: #f0b096;
+  --breeding: #a0240a;
+  --wolf: #c9a400;
+  --water: #3070d6;
+}
+@media (prefers-color-scheme: dark) {
+  .gp {
+    --surface: #1a1a19;
+    --ink-2: #c3c2b7;
+    --ink-3: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --grass: #199e70;
+    --prey: #d95926;
+    --weak: #8c5d4a;
+    --breeding: #f07a5a;
+    --wolf: #e6c229;
+    --water: #4a86e0;
+  }
+}
+
+.gp .lede { font-size: 1.05rem; }
+.gp .credit { color: var(--muted); font-size: .92rem; }
+.gp .small { font-size: .88rem; }
+.gp ul.rules { padding-left: 1.1rem; }
+.gp ul.rules li { margin: .55rem 0; }
+
+/* the simulation */
+.gp .sim { display: grid; grid-template-columns: minmax(0, 22rem) minmax(0, 1fr); gap: 1.2rem; align-items: start; margin: 1rem 0; }
+@media (max-width: 40rem) { .gp .sim { grid-template-columns: minmax(0, 1fr); } }
+.gp canvas {
+  display: block; width: 100%; aspect-ratio: 1; image-rendering: pixelated;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; cursor: crosshair;
+}
+.gp .key { display: flex; flex-wrap: wrap; gap: .25rem 1rem; list-style: none; padding: 0; margin: .5rem 0 0; font-size: .85rem; color: var(--muted); }
+.gp .key li { display: flex; align-items: center; gap: .35rem; }
+.gp .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: none; }
+.gp .sw-water { background: var(--water); }
+.gp .sw-grass { background: var(--grass); }
+.gp .sw-prey { background: linear-gradient(90deg, var(--prey), var(--wolf)); width: 28px; }
+.gp .sw-weak { background: var(--weak); }
+.gp .sw-breeding { background: var(--breeding); }
+.gp .sw-wolf { background: var(--wolf); }
+
+.gp .buttons button { width: auto; }
+.gp .buttons { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0 0 .8rem; }
+.gp .fields { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; margin: 0 0 .6rem; align-items: center; }
+.gp .fields label { display: inline-flex; align-items: center; gap: .5rem; margin: 0; }
+.gp .fields input[type="number"] { width: 5rem; }
+.gp .fields input[type="checkbox"] { width: auto; margin: 0; }
+.gp .stat { margin: .8rem 0 .3rem; font-variant-numeric: tabular-nums; }
+
+/* charts */
+.gp .chart { background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: .8rem .9rem; margin: 1rem 0; }
+.gp .chart h4 { margin: 0 0 .15rem; font-size: 1rem; }
+.gp .chart .sub { margin: 0 0 .6rem; color: var(--muted); font-size: .88rem; }
+.gp .readout { min-height: 1.4em; margin: .3rem 0 0; font-size: .92rem; font-variant-numeric: tabular-nums; }
+.gp svg.gp-svg { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; }
+.gp svg text { fill: var(--ink-2); font-size: 11px; font-family: inherit; }
+.gp svg .gp-tick { fill: var(--ink-3); }
+.gp svg .gp-label { fill: var(--ink-2); font-size: 12px; }
+.gp svg .gp-grid { stroke: var(--grid); stroke-width: 1; }
+.gp svg .gp-axis { stroke: var(--axis); stroke-width: 1; }
+.gp svg .gp-cross { stroke: var(--ink-3); stroke-width: 1; }
+.gp svg .gp-mark { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 3 3; }
+.gp svg .gp-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.gp svg path.gp-grass, .gp svg circle.gp-grass { stroke: var(--grass); fill: var(--grass); }
+.gp svg path.gp-prey, .gp svg circle.gp-prey { stroke: var(--prey); fill: var(--prey); }
+.gp svg path.gp-wolf, .gp svg circle.gp-wolf { stroke: var(--wolf); fill: var(--wolf); }
+.gp svg path.gp-line { fill: none; }
+.gp svg .gp-dot { stroke: var(--surface); stroke-width: 2; }
+
+.gp details { margin-top: .5rem; font-size: .88rem; }
+.gp details summary { cursor: pointer; color: var(--muted); }
+.gp table { border-collapse: collapse; margin-top: .4rem; font-size: .88rem; }
+.gp th, .gp td { text-align: right; padding: .2rem .8rem .2rem 0; font-variant-numeric: tabular-nums; }
+.gp th { font-weight: normal; color: var(--muted); border-bottom: 1px solid var(--rule); }
+
+/* which way prey step: a 3 x 3 table, middle = stay */
+.gp .moves { border-collapse: separate; border-spacing: 2px; margin: .6rem 0; font-size: .8rem; }
+.gp .moves caption { text-align: left; color: var(--muted); caption-side: top; padding-bottom: .25rem; }
+.gp .moves td { width: 3rem; height: 1.8rem; text-align: center; border: 1px solid var(--rule); border-radius: 3px; padding: 0; font-variant-numeric: tabular-nums; }
+
+/* the brain viewer */
+.gp .brain h5 { margin: 1rem 0 .3rem; font-size: .95rem; }
+.gp svg .gp-cell { stroke: var(--grid); stroke-width: 1; fill: transparent; }
+.gp svg .gp-pick { stroke: var(--fg); stroke-width: 2; }
+.gp svg .gp-arrow { stroke: var(--ink-3); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.gp svg .gp-edge { stroke-linecap: round; opacity: .8; }
+.gp svg .gp-pos { stroke: var(--prey); }
+.gp svg .gp-neg { stroke: #3b82c4; }
+.gp svg .gp-node { fill: var(--surface); stroke: var(--ink-3); stroke-width: 1.2; }
+.gp svg .gp-node-t { font-size: 9.5px; fill: var(--ink-2); }

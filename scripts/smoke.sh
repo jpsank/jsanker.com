@@ -25,6 +25,7 @@ for p in / /projects/ /photos/ /blog/ /projects/chemcalc/ /projects/chemcalc/tab
          /projects/openchat/ /projects/apedia/ /projects/speedreed/ /projects/wireworld/ \
          /projects/audiovisual/ /projects/hha-grades/ /projects/umusic/ \
          /projects/coronariskmap/ /projects/lucas-gifs/ /projects/riboswitches/ /projects/riboswitches/data.json \
+         /projects/yellowstone/ /projects/yellowstone/sim.js /projects/yellowstone/land.js /projects/yellowstone/brain.js \
          /projects/protop/ /projects/protop/search/ /projects/protop/catalog/ /projects/protop/workspace/ /projects/protop/flexibility/ \
          /projects/protop/api/catalog /projects/protop/js/api.js /vendor/ngl/ngl.js /api/pattern.php /assets/site.css \
          /openchat/ /openchat/popular /openchat/chats /openchat/leaderboard /openchat/auth/login \

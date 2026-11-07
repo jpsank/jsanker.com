@@ -9,10 +9,11 @@ page_start([
 ]);
 ?>
 <h1>Projects</h1>
-<h2>Research</h2>
+<h2>Recent work</h2>
 <ul class="plain">
-  <li><a href="/projects/riboswitches/">Riboswitches</a> — can two sodium-binding RNA families be one model? Search results from my 2023 research at the Breaker Lab, and the story of the pipeline.</li>
+  <li><a href="/projects/yellowstone/">Yellowstone</a> — an ecosystem on a map with hills, rain, snow, rivers and a sun that moves with the seasons, where grazers and wolves each evolve their own neural network. Run it in your browser, release the wolves, and click anyone to see their brain.</li>
   <li><a href="/projects/protop/">ProTop</a> — a protein database aggregator, a catalog of knotted proteins, and a shared annotation and mutation workspace. A Yale CPSC 439/549 team project from 2023, finished here.</li>
+  <li><a href="/projects/riboswitches/">Riboswitches</a> — can two sodium-binding RNA families be one model? Search results from my 2023 research at the Breaker Lab, and the story of the pipeline.</li>
 </ul>
 
 <h2>High school</h2>
