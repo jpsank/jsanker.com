@@ -52,6 +52,10 @@ seeded at random from about 1,260 patterns. Drag to draw cells; zoom out or pres
 On a touch screen, tap cells to toggle them and swipe to scroll the page; set “drag” to draw or move to use one finger on the grid, and pinch to zoom.</p>
 
 <h2>Colophon</h2>
-<p class="muted small">Plain HTML and PHP, one stylesheet, no tracking. The old projects are the original PHP,
-audited and patched, running in a single FrankenPHP container.</p>
+<p class="muted small">Plain HTML and PHP, one stylesheet, system fonts, no tracking. It runs in a single
+<a href="https://frankenphp.dev">FrankenPHP</a> Docker container on a Raspberry Pi 4B at home, reached through a
+<a href="https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/">Cloudflare Tunnel</a>,
+so no ports are open. A push to <code>main</code> on <a href="https://github.com/jpsank/jsanker.com">GitHub</a>
+triggers a webhook that rebuilds and swaps the container. OpenChat is a small Flask app in the same container;
+the data is SQLite on a mounted disk, plus Firebase for the blog.</p>
 <?php page_end();
