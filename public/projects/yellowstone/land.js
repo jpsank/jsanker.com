@@ -18,6 +18,7 @@
 // This file is the CPU version, and the reference. With WebGPU gpu.js runs the same passes as compute shaders (and the animals' effects on the ground
 // are collected here as deltas, see `delta`). This file has no DOM in it.
 import { makeRng } from './sim.js';
+import { SUBSTANCES, SNOW, LATENT, NATURE, snowConductivity, volumetricHeat } from './substances.js';
 
 // The regional weather the map is given, as it would be for any weather generator: how much precipitation (mm) falls in an average month over the whole
 // map, from the PRISM 1991-2020 normals (https://prism.oregonstate.edu/normals/) averaged over it. May and June are the wettest months and July to September the driest.
@@ -54,13 +55,9 @@ function freeAirAt(doy) {
 }
 
 export const PHYS = {
-  solar: 1361,        // sunlight at the top of the air, W/m2
-  sigma: 5.670374e-8, // Stefan-Boltzmann constant, W/m2/K4
-  lv: 2.5e6,          // J to evaporate a kg of water
-  lf: 3.34e5,         // J to melt a kg of ice
-  rhoAir: 1.2, cpAir: 1005,   // kg/m3 and J/kg/K of air near the ground
-  gamma: 0.066,       // psychrometric constant, kPa/K
-  cWater: 4.18e6,     // J/m3/K of liquid water
+  solar: NATURE.solar, sigma: NATURE.sigma, lv: LATENT.vaporization, lf: LATENT.fusion, gamma: NATURE.psychrometric,
+  cWater: volumetricHeat(SUBSTANCES.water),   // J/m3/K of liquid water
+  rhoAir: SUBSTANCES.air.rho, cpAir: SUBSTANCES.air.c,   // kg/m3 and J/kg/K of air near the ground
 };
 
 /** The colours of the land view, which the animals see too: bare ground shaded by height and by how the sun falls on the slope, with grass, water and snow mixed over it.
@@ -230,26 +227,27 @@ export class Land {
     // for, so `trans` is the average over clear and cloudy days; and cloud makes the sky send down more (`lwCloud`: the share of the gap between a clear sky's glow and a black body's that cloud fills).
     this.trans = opts.trans ?? 0.672;
     this.lwCloud = opts.lwCloud ?? 0.3;
-    this.emis = opts.emis ?? 0.97;               // how well the ground radiates, against a black body
+    this.emis = opts.emis ?? SUBSTANCES.soil.emissivity;   // how well the ground radiates, against a black body
     this.hAir = opts.hAir ?? 18;                 // W/m2/K that bare or grassy ground trades with the air above it (a light breeze over a rough surface)...
     this.hSnow = opts.hSnow ?? 5;                // ...and snow, over which air that is warmer than the surface lies still and trades much less
     this.hUnstable = opts.hUnstable ?? 0.1;      // ...and warmer ground stirs the air above it: the exchange grows by this share for each degree the surface is warmer than the air
     // Under the surface the ground is a layer of its own (`soil`, the temperature animals' feet and plants' roots are in). The surface passes heat to it through whatever lies on top: snow, ice and the soil itself,
     // each as thick as it is and as poor a conductor (W/m/K) as it is, so a snowpack keeps the ground under it near freezing while the air above goes far below. Deeper still the ground
     // holds the year's average warmth (it follows the ground layer's temperature with a lag of `tauDeep` seconds, so snow, which keeps the ground warmer than the air, raises it), and the layer trades heat with it through `gDeep` (W/m2/K).
-    this.kSnow = opts.kSnow ?? 0.2;  this.rhoSnow = opts.rhoSnow ?? 250;
-    this.kIce = opts.kIce ?? 2.2;    this.rhoIce = opts.rhoIce ?? 917;
-    this.kGround = opts.kGround ?? 1; this.dGround = opts.dGround ?? 0.075;
-    this.gDeep = opts.gDeep ?? 1; this.gLake = opts.gLake ?? 0.05; this.tauDeep = opts.tauDeep ?? 0.5 * 365 * 86400;
-    this.cDry = opts.cDry ?? 3e5;                // J/m2/K of the layer of dry soil that follows the day
+        this.kIce = opts.kIce ?? SUBSTANCES.ice.k;    this.rhoIce = opts.rhoIce ?? SUBSTANCES.ice.rho;
+    this.dLayer = opts.dLayer ?? 0.25;   // the thickness of the ground layer, m: about as deep as a day's warmth reaches
+    this.kGround = opts.kGround ?? SUBSTANCES.soil.k; this.dGround = opts.dGround ?? 0.3 * this.dLayer;   // (the skin's heat reaches the layer's middle through about a third of its thickness)
+    this.gDeep = opts.gDeep ?? 0.5; this.gLake = opts.gLake ?? 0.05; this.tauDeep = opts.tauDeep ?? 60 * 86400;
+    this.cDry = opts.cDry ?? volumetricHeat(SUBSTANCES.soil) * this.dLayer;   // J/m2/K of the layer of dry soil that follows the day
     this.ptAlpha = opts.ptAlpha ?? 1.26;         // Priestley-Taylor: how much a wet surface evaporates, in proportion to the energy it has left
     // A snowpack holds heat too: it has to warm to freezing all through before it melts, it holds some of its meltwater (a share `snowRetain` of its own weight) and the water freezes again when the surface turns cold at night.
     // `pack` is the heat it holds (J/m2): below zero when it is colder than freezing (by at most `coldK` degrees), above when it holds liquid water. It exchanges heat with the cold surface at `gTop` (W/m2/K).
     this.snowRetain = opts.snowRetain ?? 0.1; this.gTop = opts.gTop ?? 2; this.coldK = opts.coldK ?? 10;
     this.iceMin = opts.iceMin ?? 1;              // water deeper than this (units) freezes over in winter, and trades heat with the ground below only at `gLake` (a lake bed gives far less than dry ground)
     this.wetCrit = opts.wetCrit ?? 1;            // the depth of water (in units) at which the surface evaporates as freely as it can
-    this.albedo = opts.albedo ?? 0.2;            // the share of sunlight bare, grassy ground reflects
-    this.snowAlbedo = opts.snowAlbedo ?? 0.8;    // ...and fresh snow
+    this.albedo = opts.albedo ?? SUBSTANCES.soil.albedo;            // the share of sunlight bare, grassy ground reflects
+    this.albedoOld = opts.albedoOld ?? SNOW.albedoOld;
+    this.compactDays = opts.compactDays ?? SNOW.compactDays;   // (snow's albedo, conductivity and depth follow from its density, which is a state: see SNOW)
     this.snowAlbedoDepth = opts.snowAlbedoDepth ?? 0.3;   // (snow this deep covers the ground completely)
     // the river leaves the map: water that reaches the outlet (the lowest ground, or on a real map the edges) drains away, with the nitrogen dissolved in it
     this.outlet = new Uint8Array(size);
@@ -270,6 +268,7 @@ export class Land {
 
     // ground temperature: one number per cell, the layer of ground under the surface (see `warmGround`). It is warmed by the animals standing on it. Grass grows by it and animals feel it.
     this.soil = new Float64Array(size);
+    this.snowRho = new Float64Array(size);    // how dense the snow on each cell is, kg/m3 (0 where there is none)
     this.pack = new Float64Array(size);       // the heat a snowpack holds (see `retain`)
     this.ice = new Float64Array(size);        // ice on the water, as a depth of water (it only insulates: the water stays counted as water)
     this.tDeep = new Float64Array(size);      // the temperature of the deep ground: it follows the ground layer's with a lag of `tauDeep` (its start is a guess, see setDeep)
@@ -582,7 +581,8 @@ export class Land {
     const AIR = this.air, TH = this.theta, TN = this._th, zK = this.zKm, gD = this.gammaDry, rhoCp = PHYS.rhoAir * PHYS.cpAir, mixConv = 1 - Math.exp(-dt / this.tauConv), mixStable = 1 - Math.exp(-dt / this.tauStable),  deepK = 1 - Math.exp((-accel * dt) / this.tauDeep);
     const dx = this.cellMetres ?? this.run * (this.metresPerUnit || 1), wC = (this.windFactor * clim.w700E * dt) / dx, wR = (this.windFactor * clim.w700N * dt) / dx;   // (how many cells the wind carries the air in a step: east, and north)
     const lnTrans = Math.log(this.trans), emis = this.emis, rGround = this.dGround / this.kGround;
-    const snowDepth = kg / this.rhoSnow, iceDepth = kg / this.rhoIce;   // metres of snow, and of ice, in a unit of water
+    const iceDepth = kg / this.rhoIce;   // metres of ice in a unit of water
+    const RHO = this.snowRho, compactK = (accel * dt) / (this.compactDays * 86400);
     let gone = 0;
     for (let r = 0; r < n; r++) {
       for (let c = 0; c < n; c++) {
@@ -590,9 +590,12 @@ export class Land {
         const lit = light[i], u = lit - slope[i];   // (the sun's height for a flat cell here)
         const sn = SN[i], ic = ICE[i], covered = sn > 0.02 || ic > 0.02;
         const cover = Math.min(1, sn / this.snowAlbedoDepth);
-        const alb = this.albedo + (this.snowAlbedo - this.albedo) * cover;
+        const bare = ic > 0.02 ? SUBSTANCES.ice.albedo : W[i] > this.iceMin ? SUBSTANCES.water.albedo : this.albedo;   // what the surface is without snow: ice, open water or ground
+        const rho = sn > 0 ? RHO[i] || SNOW.rhoNew : SNOW.rhoNew, aged = Math.min(1, Math.max(0, (rho - SNOW.rhoNew) / (SNOW.rhoSettled - SNOW.rhoNew)));
+        const snowAlb = SNOW.albedoNew + (this.albedoOld - SNOW.albedoNew) * aged;   // (fresh snow is bright, old snow darker)
+        const alb = bare + (snowAlb - bare) * cover;
         const hb = this.hAir + (this.hSnow - this.hAir) * cover;   // (how much heat the surface trades with the air, before warm ground stirs it)
-        const gc = 1 / (rGround + (sn * snowDepth) / this.kSnow + (ic * iceDepth) / this.kIce);   // W/m2/K from the skin to the ground layer
+        const gc = 1 / (rGround + ((sn * kg) / rho / snowConductivity(rho)) + (ic * iceDepth) / this.kIce);   // W/m2/K from the skin to the ground layer
         const sw = u > 0 ? solar * Math.exp(lnTrans / Math.max(u, 0.08)) * (1 - alb) * lit : 0;
         const clear = 1 - 0.261 * Math.exp(-7.77e-4 * ta * ta);   // the sky's emissivity in clear air (Idso and Jackson, 1969)
         const lwd = (clear + this.lwCloud * (1 - clear)) * sigma * ak * ak * ak * ak;
@@ -619,8 +622,11 @@ export class Land {
             ts = 0; q = gc * (0 - tg);
           } else PACK[i] = Math.max(PACK[i] - accel * dt * this.gTop * (0 - ts), -this.coldK * 2100 * kg * SN[i]);
           const over = PACK[i] - this.snowRetain * SN[i] * lf * kg;   // heat beyond what the liquid it can hold takes melts snow and drains
-          if (over > 0) { const ms = Math.min(SN[i], over / (lf * kg)); SN[i] -= ms; W[i] += ms; PACK[i] -= ms * lf * kg; }
-          if (SN[i] <= 0) PACK[i] = 0;
+          let melted = 0;
+          if (over > 0) { melted = Math.min(SN[i], over / (lf * kg)); SN[i] -= melted; W[i] += melted; PACK[i] -= melted * lf * kg; }
+          // it settles under its own weight (faster when warm), and meltwater that freezes in it makes it denser
+          if (SN[i] > 0) RHO[i] = rho + (SNOW.rhoSettled - rho) * Math.min(1, 1 - Math.exp(-compactK * Math.exp(0.08 * ta)) + (2 * melted) / (SN[i] + melted));
+          else { PACK[i] = 0; RHO[i] = 0; }
         } else if (ic > 0.02 && ts > 0) {   // ice takes the skin no warmer than freezing: what it would gain held at 0 C melts ice
           const f0 = 273.15;
           const m = accel * dt * (sw + lwd - emis * sigma * f0 * f0 * f0 * f0 + hb * ta) + dt * gc * tg;
@@ -704,7 +710,8 @@ export class Land {
       let fell = 0;
       for (let i = 0; i < size; i++) {
         const r = this.row[i], d = this.rainDepth * clim.wet * clim.rain[r] * Math.max(0.1, 1 + this.kOro * this.hKm[i]);   // more falls in the north, and more the higher the ground
-        if (AIR[i] < 1) S[i] += d; else W[i] += d;           // snow where the air is near freezing
+        if (AIR[i] < 1 && W[i] > this.iceMin && this.ice[i] <= 0) { W[i] += d; this.soil[i] -= (d * this.waterMm * PHYS.lf) / this.heatCap(i); }   // snow that falls on open water melts into it, and the water pays the heat it takes
+        else if (AIR[i] < 1) { const so = S[i], ro = this.snowRho[i] || SNOW.rhoNew; this.snowRho[i] = (so + d) / (so / ro + d / SNOW.rhoNew); S[i] += d; } else W[i] += d;           // snow where the air is near freezing
         fell += d;
       }
       this.ledger.rain += fell;

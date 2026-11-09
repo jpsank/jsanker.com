@@ -10,6 +10,7 @@
 import { BRAIN, PROGRAM, encodeProgram, packNet, VISION, EYES, SAMPLES, N_VIEW, RAY_PACKED, RETINA, OUTPUTS } from './sim.js';
 import { ES } from './esnet.js';
 import { SHADOW_SOFT, SHADOW_REACH, LANDVIEW, PHYS } from './land.js';
+import { SUBSTANCES, SNOW } from './substances.js';
 
 const WG = 256;                 // threads per workgroup in the ground passes
 const SLOT_CAP = 200000;        // never more brains than this
@@ -18,8 +19,8 @@ const EDGE0 = 3 + 4 * PROGRAM.maxNodes;   // where a program's connections start
 /* ------------------------------------------------------------------ the ground */
 
 const LAND_FIELDS = [
-  ['n', 'u32'], ['size', 'u32'], ['raining', 'f32'], ['rainD', 'f32'], ['heatGain', 'f32'], ['kOro', 'f32'], ['albedo', 'f32'], ['snowAlbedo', 'f32'], ['snowAlbedoDepth', 'f32'], ['invWs', 'f32'], ['retain', 'f32'], ['flowMin', 'f32'], ['soakMax', 'f32'], ['floodStart', 'f32'], ['floodEnd', 'f32'], ['nMobile', 'f32'],
-  ['waterHeatMax', 'f32'], ['cDry', 'f32'], ['cWaterU', 'f32'], ['kg', 'f32'], ['hUnstable', 'f32'], ['rGround', 'f32'], ['snowRes', 'f32'], ['iceRes', 'f32'], ['gDeep', 'f32'], ['gLake', 'f32'], ['iceMin', 'f32'], ['snowRetain', 'f32'], ['gTop', 'f32'], ['coldK', 'f32'], ['gammaDry', 'f32'], ['freeLapse', 'f32'], ['windC', 'f32'], ['windR', 'f32'], ['dtDx', 'f32'], ['hblMin', 'f32'], ['hblMax', 'f32'], ['kBL', 'f32'], ['drain', 'f32'], ['drainMax', 'f32'], ['mixConv', 'f32'], ['mixStable', 'f32'], ['rhoCp', 'f32'], ['deepK', 'f32'], ['lnTrans', 'f32'], ['lwCloud', 'f32'], ['emis', 'f32'], ['hAir', 'f32'], ['hSnow', 'f32'], ['ptAlpha', 'f32'], ['wetCrit', 'f32'], ['dt', 'f32'], ['accel', 'f32'], ['deposit', 'f32'], ['seep', 'f32'], ['floodSeep', 'f32'], ['seepMax', 'f32'],
+  ['n', 'u32'], ['size', 'u32'], ['raining', 'f32'], ['rainD', 'f32'], ['heatGain', 'f32'], ['kOro', 'f32'], ['albedo', 'f32'], ['snowAlbedoDepth', 'f32'], ['invWs', 'f32'], ['retain', 'f32'], ['flowMin', 'f32'], ['soakMax', 'f32'], ['floodStart', 'f32'], ['floodEnd', 'f32'], ['nMobile', 'f32'],
+  ['waterHeatMax', 'f32'], ['cDry', 'f32'], ['cWaterU', 'f32'], ['kg', 'f32'], ['hUnstable', 'f32'], ['rGround', 'f32'], ['iceRes', 'f32'], ['albedoOld', 'f32'], ['compactK', 'f32'], ['gDeep', 'f32'], ['gLake', 'f32'], ['iceMin', 'f32'], ['snowRetain', 'f32'], ['gTop', 'f32'], ['coldK', 'f32'], ['gammaDry', 'f32'], ['albedoWater', 'f32'], ['albedoIce', 'f32'], ['freeLapse', 'f32'], ['windC', 'f32'], ['windR', 'f32'], ['dtDx', 'f32'], ['hblMin', 'f32'], ['hblMax', 'f32'], ['kBL', 'f32'], ['drain', 'f32'], ['drainMax', 'f32'], ['mixConv', 'f32'], ['mixStable', 'f32'], ['rhoCp', 'f32'], ['deepK', 'f32'], ['lnTrans', 'f32'], ['lwCloud', 'f32'], ['emis', 'f32'], ['hAir', 'f32'], ['hSnow', 'f32'], ['ptAlpha', 'f32'], ['wetCrit', 'f32'], ['dt', 'f32'], ['accel', 'f32'], ['deposit', 'f32'], ['seep', 'f32'], ['floodSeep', 'f32'], ['seepMax', 'f32'],
   ['flow', 'f32'], ['creep', 'f32'], ['leach', 'f32'], ['outletRate', 'f32'], ['regrow', 'f32'], ['gMax', 'f32'], ['waterPer', 'f32'], ['nPer', 'f32'], ['shadows', 'f32'], ['cellRun', 'f32'], ['skyMax', 'f32'],
 ];
 const PARAM_BYTES = LAND_FIELDS.length * 4;
@@ -184,9 +185,15 @@ ${MAIN} {
     var pk = iceBuf[4u * i + 1u];
     let covered = sn > 0.02 || ic > 0.02;
     let cover = min(1.0, sn / P.snowAlbedoDepth);
-    let alb = P.albedo + (P.snowAlbedo - P.albedo) * cover;
+    var bare = P.albedo;
+    if (ic > 0.02) { bare = P.albedoIce; } else if (w > P.iceMin) { bare = P.albedoWater; }
+    var rho = iceBuf[4u * i + 3u];
+    if (sn <= 0.0 || rho <= 0.0) { rho = ${SNOW.rhoNew}.0; }
+    let aged = clamp((rho - ${SNOW.rhoNew}.0) / (${SNOW.rhoSettled}.0 - ${SNOW.rhoNew}.0), 0.0, 1.0);
+    let snowAlb = ${SNOW.albedoNew} + (P.albedoOld - ${SNOW.albedoNew}) * aged;
+    let alb = bare + (snowAlb - bare) * cover;
     let hb = P.hAir + (P.hSnow - P.hAir) * cover;
-    let gc = 1.0 / (P.rGround + sn * P.snowRes + ic * P.iceRes);
+    let gc = 1.0 / (P.rGround + sn * P.kg / rho / (2.5e-6 * rho * rho - 1.23e-4 * rho + 0.024) + ic * P.iceRes);
     var sw = 0.0;
     if (u > 0.0) { sw = ${PHYS.solar}.0 * exp(P.lnTrans / max(u, 0.08)) * (1.0 - alb) * lit; }
     let clear = 1.0 - 0.261 * exp(-7.77e-4 * ta * ta);
@@ -222,13 +229,16 @@ ${MAIN} {
         pk = max(pk - P.accel * P.dt * P.gTop * (0.0 - ts), -P.coldK * 2100.0 * P.kg * sn);
       }
       let over = pk - P.snowRetain * sn * ${PHYS.lf}.0 * P.kg;
+      var melted = 0.0;
       if (over > 0.0) {
-        let ms = min(sn, over / (${PHYS.lf}.0 * P.kg));
-        sn = sn - ms;
-        w = w + ms;
-        pk = pk - ms * ${PHYS.lf}.0 * P.kg;
+        melted = min(sn, over / (${PHYS.lf}.0 * P.kg));
+        sn = sn - melted;
+        w = w + melted;
+        pk = pk - melted * ${PHYS.lf}.0 * P.kg;
       }
-      if (sn <= 0.0) { pk = 0.0; }
+      if (sn > 0.0) {
+        rho = rho + (${SNOW.rhoSettled}.0 - rho) * min(1.0, 1.0 - exp(-P.compactK * exp(0.08 * ta)) + 2.0 * melted / (sn + melted));
+      } else { pk = 0.0; rho = 0.0; }
     } else if (ic > 0.02 && ts > 0.0) {
       let m = P.accel * P.dt * (sw + lwd - P.emis * ${PHYS.sigma} * 273.15 * 273.15 * 273.15 * 273.15 + hb * ta) + P.dt * gc * tg;
       if (m > 0.0) { ic = ic - min(ic, m / (${PHYS.lf}.0 * P.kg)); }
@@ -252,6 +262,8 @@ ${MAIN} {
     }
     iceBuf[4u * i] = ic;
     iceBuf[4u * i + 1u] = pk;
+    if (sn <= 0.0) { rho = 0.0; }
+    iceBuf[4u * i + 3u] = rho;
     iceBuf[4u * i + 2u] = tdeep + (tn - tdeep) * P.deepK;
     // the air: what was upwind a step ago (the free atmosphere, from outside the map), warmed by the surface through the boundary layer, and mixed with the free atmosphere above (see Land.warmGround)
     let hh = hb * (1.0 + P.hUnstable * max(0.0, ts - ta));
@@ -302,7 +314,7 @@ const WEATHER = /* wgsl */ `
 @group(0) @binding(3) var<storage, read_write> sB: array<f32>;
 @group(0) @binding(4) var<storage, read> stat: array<vec4<f32>>;
 @group(0) @binding(5) var<storage, read_write> acc: array<f32>;
-@group(0) @binding(6) var<storage, read> lightIn: array<f32>;
+@group(0) @binding(6) var<storage, read_write> iceBuf: array<f32>;
 @group(0) @binding(7) var<storage, read> thBuf: array<f32>;
 ${MAIN} {
   let i = g.x;
@@ -319,7 +331,15 @@ ${MAIN} {
     let air = thBuf[i] - P.gammaDry * nm.w;
     if (P.raining > 0.5) {
       let d = P.rainD * rw2.y * max(0.1, 1.0 + P.kOro * st.y);
-      if (air < 1.0) { sn = sn + d; } else { w = w + d; }
+      if (air < 1.0 && w > P.iceMin && iceBuf[4u * i] <= 0.0) {
+        w = w + d;
+        a.w = a.w - d * P.kg * ${PHYS.lf}.0 / heatCap(w);
+      } else if (air < 1.0) {
+        var ro = iceBuf[4u * i + 3u];
+        if (ro <= 0.0) { ro = ${SNOW.rhoNew}.0; }
+        iceBuf[4u * i + 3u] = (sn + d) / (sn / ro + d / ${SNOW.rhoNew}.0);
+        sn = sn + d;
+      } else { w = w + d; }
     }
     nn = nn + P.deposit;
     let y = min(min(min(w, P.soakMax) * P.seep + P.floodSeep * max(0.0, w - 1.5), P.seepMax), w);
@@ -940,7 +960,7 @@ class Gpu {
       apply: await make('apply', PRELUDE + APPLY, { ...U2, 2: 'w', 3: 'w', 4: 'r' }),
       light: await make('light', PRELUDE + LIGHT, { ...U2, 2: 'r', 3: 'w' }),
       soil: await make('soil', PRELUDE + SOIL, { ...U2, 2: 'r', 3: 'w', 4: 'r', 5: 'r', 6: 'w', 7: 'w', 8: 'r', 9: 'w' }),
-      weather: await make('weather', PRELUDE + WEATHER, { ...U2, 2: 'w', 3: 'w', 4: 'r', 5: 'w', 6: 'r', 7: 'r' }),
+      weather: await make('weather', PRELUDE + WEATHER, { ...U2, 2: 'w', 3: 'w', 4: 'r', 5: 'w', 6: 'w', 7: 'r' }),
       flux: await make('flux', PRELUDE + FLUX, { ...U2, 2: 'r', 3: 'w', 4: 'w', 5: 'r' }),
       gather: await make('gather', PRELUDE + GATHER, { ...U2, 2: 'r', 3: 'r', 4: 'w', 5: 'w', 6: 'r', 7: 'r' }),
       creep: await make('creep', PRELUDE + CREEP, { ...U2, 2: 'r', 3: 'r', 4: 'w', 5: 'w', 6: 'r', 7: 'w' }),
@@ -1101,7 +1121,7 @@ class GpuSim {
 
     // parameters and the row table
     const dx = L.cellMetres ?? L.run * (L.metresPerUnit || 1);
-    const pd = this.paramData, vals = { n, size, raining: L.raining ? 1 : 0, rainD: L.rainDepth * w.clim.wet, heatGain: L.heatGain, gammaDry: L.gammaDry, freeLapse: w.clim.freeLapse, windC: (L.windFactor * w.clim.w700E * w.clim.dt) / dx, windR: (L.windFactor * w.clim.w700N * w.clim.dt) / dx, dtDx: w.clim.dt / dx, hblMin: L.hblMin, hblMax: L.hblMax, kBL: L.kBL, drain: L.drain, drainMax: L.drainMax, mixConv: 1 - Math.exp(-w.clim.dt / L.tauConv), mixStable: 1 - Math.exp(-w.clim.dt / L.tauStable), rhoCp: PHYS.rhoAir * PHYS.cpAir, deepK: 1 - Math.exp((-w.clim.accel * w.clim.dt) / L.tauDeep), kOro: w.clim.kOro, albedo: L.albedo, snowAlbedo: L.snowAlbedo, snowAlbedoDepth: L.snowAlbedoDepth, invWs: L.invWs, retain: L.retain, flowMin: L.flowMin, soakMax: Math.min(L.soakMax, 1e30), floodStart: L.floodStart, floodEnd: L.floodEnd, nMobile: L.nMobile, waterHeatMax: L.waterHeatMax, cDry: L.cDry, cWaterU: (PHYS.cWater * L.waterMm) / 1000, kg: L.waterMm, hUnstable: L.hUnstable, rGround: L.dGround / L.kGround, snowRes: L.waterMm / L.rhoSnow / L.kSnow, iceRes: L.waterMm / L.rhoIce / L.kIce, gDeep: L.gDeep, gLake: L.gLake, iceMin: L.iceMin, snowRetain: L.snowRetain, gTop: L.gTop, coldK: L.coldK, lnTrans: Math.log(L.trans), lwCloud: L.lwCloud, emis: L.emis, hAir: L.hAir, hSnow: L.hSnow, ptAlpha: L.ptAlpha, wetCrit: L.wetCrit, dt: w.clim.dt, accel: w.clim.accel, deposit: L.deposit, seep: L.seep, floodSeep: L.floodSeep, seepMax: L.seepMax, flow: L.flow, creep: L.creep, leach: L.leach, outletRate: L.outletRate, regrow: L.regrow, gMax: L.gMax, waterPer: L.waterPer, nPer: L.nPer, shadows: L.skyH ? 1 : 0, cellRun: L.run, skyMax: L.skyMax ?? 0 };
+    const pd = this.paramData, vals = { n, size, raining: L.raining ? 1 : 0, rainD: L.rainDepth * w.clim.wet, heatGain: L.heatGain, gammaDry: L.gammaDry, albedoWater: SUBSTANCES.water.albedo, albedoIce: SUBSTANCES.ice.albedo, freeLapse: w.clim.freeLapse, windC: (L.windFactor * w.clim.w700E * w.clim.dt) / dx, windR: (L.windFactor * w.clim.w700N * w.clim.dt) / dx, dtDx: w.clim.dt / dx, hblMin: L.hblMin, hblMax: L.hblMax, kBL: L.kBL, drain: L.drain, drainMax: L.drainMax, mixConv: 1 - Math.exp(-w.clim.dt / L.tauConv), mixStable: 1 - Math.exp(-w.clim.dt / L.tauStable), rhoCp: PHYS.rhoAir * PHYS.cpAir, deepK: 1 - Math.exp((-w.clim.accel * w.clim.dt) / L.tauDeep), kOro: w.clim.kOro, albedo: L.albedo, snowAlbedoDepth: L.snowAlbedoDepth, invWs: L.invWs, retain: L.retain, flowMin: L.flowMin, soakMax: Math.min(L.soakMax, 1e30), floodStart: L.floodStart, floodEnd: L.floodEnd, nMobile: L.nMobile, waterHeatMax: L.waterHeatMax, cDry: L.cDry, cWaterU: (PHYS.cWater * L.waterMm) / 1000, kg: L.waterMm, hUnstable: L.hUnstable, rGround: L.dGround / L.kGround, albedoOld: L.albedoOld, compactK: (w.clim.accel * w.clim.dt) / (L.compactDays * 86400), iceRes: L.waterMm / L.rhoIce / L.kIce, gDeep: L.gDeep, gLake: L.gLake, iceMin: L.iceMin, snowRetain: L.snowRetain, gTop: L.gTop, coldK: L.coldK, lnTrans: Math.log(L.trans), lwCloud: L.lwCloud, emis: L.emis, hAir: L.hAir, hSnow: L.hSnow, ptAlpha: L.ptAlpha, wetCrit: L.wetCrit, dt: w.clim.dt, accel: w.clim.accel, deposit: L.deposit, seep: L.seep, floodSeep: L.floodSeep, seepMax: L.seepMax, flow: L.flow, creep: L.creep, leach: L.leach, outletRate: L.outletRate, regrow: L.regrow, gMax: L.gMax, waterPer: L.waterPer, nPer: L.nPer, shadows: L.skyH ? 1 : 0, cellRun: L.run, skyMax: L.skyMax ?? 0 };
     LAND_FIELDS.forEach(([k, t], i) => (t === 'u32' ? pd.setUint32(i * 4, vals[k], true) : pd.setFloat32(i * 4, vals[k], true)));
     q.writeBuffer(this.P, 0, pd);
     const rd = this.rowData, c = w.clim;
@@ -1200,7 +1220,7 @@ class GpuSim {
     go(P.apply, ...base, A(), B(), this.dlBuf);
     go(P.light, ...base, this.stat, this.lightBuf);
     go(P.soil, ...base, A(), this.A[1 - this.pa], this.stat, this.lightBuf, this.acc, this.iceBuf, this.theta[this.pt], this.theta[1 - this.pt]); this.pa ^= 1; this.pt ^= 1;
-    go(P.weather, ...base, A(), B(), this.stat, this.acc, this.lightBuf, this.theta[this.pt]);
+    go(P.weather, ...base, A(), B(), this.stat, this.acc, this.iceBuf, this.theta[this.pt]);
     for (let s = 0; s < L.flowSteps; s++) {
       go(P.flux, ...base, A(), this.fluxA, this.fluxB, this.stat);
       go(P.gather, ...base, A(), B(), this.A[1 - this.pa], this.B[1 - this.pb], this.fluxA, this.fluxB); this.pa ^= 1; this.pb ^= 1;
