@@ -1,6 +1,6 @@
 // The brain viewer: click an organism and see what it sees, what each layer of its network does, what it decides,
 // and the NEAT genome that grew the network. Plain SVG; everything is rebuilt from sim.js's World.brain() and genomeGraph().
-import { speciesName, genomeGraph, ACT_NAMES } from './sim.js';
+import { speciesName, genomeGraph, ACT_NAMES, EYES, SAMPLES, fovDeg, BREED_REL } from './sim.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 
@@ -19,6 +19,24 @@ const num = (v) => (Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(2));
 
 const COORD = ['to x', 'to y', 'to z', 'from x', 'from y', 'from z'];
 const ACT_SHORT = ['sigmoid', 'relu', 'tanh', 'sin', 'cos'];
+
+const HEADINGS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
+const REL_NAMES = ['straight ahead', 'ahead and to the right', 'to the right', 'behind and to the right', 'behind', 'behind and to the left', 'to the left', 'ahead and to the left'];
+/** What action cell k of the movement grid means: columns turn (left, none, right), rows move (forward, stay, back). */
+const moveName = (k) => {
+  const row = Math.floor(k / 3), col = k % 3;
+  if (k === 4) return 'stays put';
+  if (row === 1) return col === 0 ? 'turns left on the spot' : 'turns right on the spot';
+  const way = row === 0 ? 'forward' : 'back';
+  return col === 1 ? `steps ${way}` : `turns ${col === 0 ? 'left' : 'right'} and steps ${way}`;
+};
+const breedName = (k) => (BREED_REL[k] < 0 ? 'nobody (itself)' : REL_NAMES[BREED_REL[k]]);
+
+/** A ring segment between two radii and two angles (clockwise from straight up), as an SVG path. */
+function sector(cx, cy, r0, r1, a0, a1) {
+  const pt = (r, a) => `${(cx + r * Math.sin(a)).toFixed(2)} ${(cy - r * Math.cos(a)).toFixed(2)}`;
+  return `M${pt(r1, a0)} A${r1} ${r1} 0 0 1 ${pt(r1, a1)} L${pt(r0, a1)} A${r0} ${r0} 0 0 0 ${pt(r0, a0)} Z`;
+}
 
 /** A 3 x 3 (or k x k) grid of cells. Returns the rects, row-major. */
 function grid(parent, x, y, k, cell, label) {
@@ -41,33 +59,43 @@ export function createBrainPanel(host) {
 
   /* ---- the network, layer by layer (built once per organism, repainted as it runs) */
 
-  function buildSub() {
+  function buildSub(org) {
     subHost.replaceChildren();
-    const k = 9, W = 640, cellIn = 19, cellH = 20, cellO = 24, H = 230;
+    const k = 9, W = 640, cellIn = 19, cellH = 20, cellO = 24, H = 230, fan = 90;
     const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'gp-svg', role: 'img', 'aria-label': 'The animal\'s network: what it sees, its hidden layer, and what it picks' }, subHost);
     const p = { k, input: [], hidden: [], move: [], breed: [] };
     const y0 = 22;
     let x = 10;
     text(svg, { class: 'gp-label', x, y: 12 }, 'Sees');
-    p.input = grid(svg, x, y0, k, cellIn, `${k} × ${k} colours`);
-    x += k * cellIn + 30;
+    // the fan it sees, as it faces: straight ahead is up. Each ray is a wedge, and each distance a ring along it (the rings end at 1, 2, 4 and 6 cells out, each averaging the cells since the last).
+    const fov = fovDeg(org.eyes), half = (fov / 2) * Math.PI / 180, wedge = (fov * Math.PI / 180) / (EYES.rays - 1);
+    const cx = x + fan + 2, cy = y0 + fan + 4, edge = [0.4, 1.5, 3, 5, 7].map((c) => (c / 7) * fan), dist = EYES.seen.map((st) => st + 1);
+    for (let ray = 0; ray < EYES.rays; ray++) for (let d = 0; d < SAMPLES; d++) {
+      const mid = -half + ray * wedge;
+      p.input.push(el('path', { class: 'gp-cell', d: sector(cx, cy, edge[d], edge[d + 1], mid - wedge / 2, mid + wedge / 2) }, svg, `${dist[d]} cell${dist[d] === 1 ? '' : 's'} out, ${Math.round(mid * 180 / Math.PI)}° from straight ahead`));
+    }
+    el('path', { class: 'gp-arrow', d: `M${cx} ${cy - 4} v-10 m-4 4 l4 -4 l4 4`, fill: 'none' }, svg);
+    p.facing = text(svg, { class: 'gp-tick', x: cx, y: cy + fan * 0.88 + 14, 'text-anchor': 'middle' }, '');
+    text(svg, { class: 'gp-tick', x: cx, y: H - 4, 'text-anchor': 'middle' }, `${Math.round(fov)}° field of view`);
+    x += 2 * fan + 30;
     text(svg, { class: 'gp-label', x, y: 12 }, 'Hidden layer');
     for (let c = 0; c < 3; c++) p.hidden.push(grid(svg, x + c * (3 * cellH + 8), y0 + 30, 3, cellH, ['a', 'b', 'c'][c]));
     x += 3 * (3 * cellH + 8) + 22;
     text(svg, { class: 'gp-label', x, y: 12 }, 'Picks');
     p.outX = x;
-    p.move = grid(svg, x, y0 + 30, 3, cellO, 'step: want − cost');
+    p.move = grid(svg, x, y0 + 30, 3, cellO, 'move');
     p.breed = grid(svg, x + 3 * cellO + 14, y0 + 30, 3, cellO, 'breed');
     const mid = y0 + 30 + 36;
     const arrow = (ax) => el('path', { class: 'gp-arrow', d: `M${ax - 22} ${mid} h14 m-5 -4 l5 4 l-5 4`, fill: 'none' }, svg);
-    arrow(10 + k * cellIn + 30); arrow(p.outX);
-    p.say = text(svg, { class: 'gp-tick', x: 10, y: H - 4 }, '');
+    arrow(10 + 2 * fan + 30); arrow(p.outX);
+    p.say = text(svg, { class: 'gp-tick', x: 10 + 2 * fan + 30, y: H - 4 }, '');
     parts = p;
   }
 
   function paintSub(world, org) {
     const b = world.brain(org);
     const p = parts;
+    p.facing.textContent = `facing ${HEADINGS[org.h]}`;
     for (let i = 0; i < b.input.length / 3; i++) {
       const r = Math.round((b.input[i * 3] + 0.5) * 255), g = Math.round((b.input[i * 3 + 1] + 0.5) * 255), bl = Math.round((b.input[i * 3 + 2] + 0.5) * 255);
       p.input[i].style.fill = `rgb(${r},${g},${bl})`;
@@ -95,14 +123,13 @@ export function createBrainPanel(host) {
       for (let i = 0; i < 9; i++) {
         rects[i].style.fill = signed(val(i) / mx);
         rects[i].setAttribute('class', i === pick ? 'gp-cell gp-pick' : 'gp-cell');
-        const where = i === 4 ? 'stay' : 'step ' + (Math.floor(i / 3) - 1) + ',' + ((i % 3) - 1);
+        const where = ch === 0 ? moveName(i) : breedName(i);
         rects[i].firstChild.textContent = ch === 0
-          ? (b.costs[i] >= 1e29 ? `${where}: the edge of the map` : `${where}: wants ${num(out[i * 2])}, costs ${b.costs[i].toFixed(2)}${i === pick ? ' (picked)' : ''}`)
-          : `${where}: ${num(out[i * 2 + 1])}${i === pick ? ' (picked)' : ''}`;
+          ? (b.costs[i] >= 1e29 ? `${where}: into the edge of the map` : `${where}: wants ${num(out[i * 2])}, costs ${b.costs[i].toFixed(2)}${i === pick ? ' (picked)' : ''}`)
+          : `breed with whoever is ${where}: ${num(out[i * 2 + 1])}${i === pick ? ' (picked)' : ''}`;
       }
     }
-    const where = (a) => (a[0] === 0 && a[1] === 0 ? 'its own cell' : `row ${a[0] > 0 ? '+' : ''}${a[0]}, column ${a[1] > 0 ? '+' : ''}${a[1]}`);
-    p.say.textContent = `Steps to ${where(b.move)}; would breed toward ${where(b.breed)} if it had the energy.`;
+    p.say.textContent = `It ${moveName(b.move[2])}; would breed with whoever is ${breedName(b.breed[2])} if it had the energy.`;
   }
 
   /* ---- the genome (built once per organism: it never changes during a life) */
@@ -165,7 +192,7 @@ export function createBrainPanel(host) {
     show(world, org) {
       sel = org; deadAt = null;
       host.hidden = false;
-      buildSub();
+      buildSub(org);
       buildGenome(org);
       paintSub(world, org);
       describe(world);

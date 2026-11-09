@@ -1,5 +1,5 @@
 // Yellowstone: the page. The simulation itself is in sim.js; nothing here talks to a server.
-import { World } from './sim.js';
+import { World, EYES, fovDeg } from './sim.js';
 import { createBrainPanel } from './brain.js';
 import { createGpu } from './gpu.js';
 import { LANDVIEW, landRgb } from './land.js';
@@ -43,8 +43,8 @@ const niceMax = (m) => {
  * Two lines against a shared axis. `get()` returns { t, grass, prey, mark } so a live run can keep appending.
  * The numbers under the pointer go into `readout`, so no value ever has to be read off the plot.
  */
-function lineChart(host, readout, get, label, series) {   // get() returns { t, grass, prey, wolf, xMax }; series: [[key, label]...]
-  const W = 640, H = 230, L = 46, R = 58, T = 10, B = 26;
+function lineChart(host, readout, get, label, series, split = false) {   // get() returns { t, grass, prey, wolf, xMax }; series: [[key, label]...]; split: each series on its own scale (the first on the left axis, the others on axes down the right side) in one panel
+  const W = 640, L = 46, R = split ? 14 + 56 * (series.length - 1) : 58, T = split ? 26 : 10, B = 26, H = 230;
   const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': label, class: 'gp-svg' });
   host.replaceChildren(svg);
   const g = s('g', {}, svg);
@@ -59,15 +59,24 @@ function lineChart(host, readout, get, label, series) {   // get() returns { t, 
     const n = d.t.length;
     const xMax = Math.max(100, d.xMax || d.t[n - 1] || 100);
     const keys = series.map((x) => x[0]).filter((k) => k !== 'wolf' || Math.max(0, ...d.wolf) > 0);
-    const yMax = niceMax(Math.max(1, ...keys.map((k) => Math.max(0, ...d[k]))));
     const X = (t) => L + (t / xMax) * (W - L - R);
-    const Y = (v) => H - B - (v / yMax) * (H - T - B);
+    // one scale for all the lines, or (split) one for each, so a series that is far smaller than another can still be read
+    const top = (split ? series.map((x) => x[0]) : [null]).map((k) => niceMax(Math.max(1, ...(k ? [k] : keys).map((j) => Math.max(0, ...d[j])))));
+    const yMaxOf = (key) => top[split ? series.findIndex((x) => x[0] === key) : 0];
+    const Y = (key, v) => H - B - (v / yMaxOf(key)) * (H - T - B);
+    const axisX = (i) => (i ? W - R + 6 + 56 * (i - 1) : L - 6);   // where the numbers of series i go
 
     for (let i = 0; i <= 4; i++) {
-      const v = (yMax * i) / 4, y = Y(v);
+      const y = Y(series[0][0], (top[0] * i) / 4);
       s('line', { class: i ? 'gp-grid' : 'gp-axis', x1: L, x2: W - R, y1: y, y2: y }, g);
-      s('text', { class: 'gp-tick', x: L - 6, y: y + 4, 'text-anchor': 'end' }, g).textContent = fmt(v);
+      s('text', { class: 'gp-tick', x: L - 6, y: y + 4, 'text-anchor': 'end' }, g).textContent = fmt((top[0] * i) / 4);
+      if (split) for (let j = 1; j < series.length; j++) if (keys.includes(series[j][0])) s('text', { class: 'gp-tick', x: axisX(j), y: y + 4 }, g).textContent = fmt((top[j] * i) / 4);
     }
+    if (split) series.forEach(([key, name], i) => {   // which scale is which
+      if (!keys.includes(key)) return;
+      s('circle', { class: 'gp-dot gp-' + key, cx: i ? axisX(i) + 3 : axisX(i) - 3, cy: 11, r: 3.5 }, g);
+      s('text', { class: 'gp-tick', x: i ? axisX(i) + 12 : axisX(i) - 12, y: 15, 'text-anchor': i ? 'start' : 'end' }, g).textContent = name;
+    });
     const xs = niceMax(xMax) / (xMax > 2500 ? 5 : 4);
     for (let t = 0; t <= xMax; t += xs) {
       s('text', { class: 'gp-tick', x: X(t), y: H - 8, 'text-anchor': 'middle' }, g).textContent = fmt(t);
@@ -77,16 +86,17 @@ function lineChart(host, readout, get, label, series) {   // get() returns { t, 
     const stride = Math.max(1, Math.floor(n / 600));
     for (const key of keys) {
       let path = '';
-      for (let i = 0; i < n; i += stride) path += (path ? 'L' : 'M') + X(d.t[i]).toFixed(1) + ' ' + Y(d[key][i]).toFixed(1);
-      if ((n - 1) % stride) path += 'L' + X(d.t[n - 1]).toFixed(1) + ' ' + Y(d[key][n - 1]).toFixed(1);
+      for (let i = 0; i < n; i += stride) path += (path ? 'L' : 'M') + X(d.t[i]).toFixed(1) + ' ' + Y(key, d[key][i]).toFixed(1);
+      if ((n - 1) % stride) path += 'L' + X(d.t[n - 1]).toFixed(1) + ' ' + Y(key, d[key][n - 1]).toFixed(1);
       s('path', { class: 'gp-line gp-' + key, d: path }, g);
-      const ly = Y(d[key][n - 1]);
-      s('circle', { class: 'gp-dot gp-' + key, cx: X(d.t[n - 1]), cy: ly, r: 3.5 }, g);
+      s('circle', { class: 'gp-dot gp-' + key, cx: X(d.t[n - 1]), cy: Y(key, d[key][n - 1]), r: 3.5 }, g);
     }
-    // direct labels at the line ends, nudged apart so they never overlap
-    const labels = keys.map((key) => ({ key, y: Y(d[key][n - 1]) })).sort((a, b) => a.y - b.y);
-    for (let i = 1; i < labels.length; i++) if (labels[i].y - labels[i - 1].y < 14) labels[i].y = labels[i - 1].y + 14;
-    for (const l of labels) s('text', { class: 'gp-label', x: W - R + 8, y: l.y + 4 }, g).textContent = series.find((x) => x[0] === l.key)[1];
+    // direct labels at the line ends, nudged apart so they never overlap (with two scales, the axis numbers are at the right edge, so the names are not repeated)
+    if (!split) {
+      const labels = keys.map((key) => ({ key, y: Y(key, d[key][n - 1]) })).sort((a, b) => a.y - b.y);
+      for (let i = 1; i < labels.length; i++) if (labels[i].y - labels[i - 1].y < 14) labels[i].y = labels[i - 1].y + 14;
+      for (const l of labels) s('text', { class: 'gp-label', x: W - R + 8, y: l.y + 4 }, g).textContent = series.find((x) => x[0] === l.key)[1];
+    }
   }
 
   hit.addEventListener('pointermove', (ev) => {
@@ -132,19 +142,13 @@ async function init() {
   let img = null;
   const btnRun = $('gp-run'), btnStep = $('gp-step'), btnReset = $('gp-reset'), btnWolves = $('gp-wolves');
   const seedIn = $('gp-seed'), speedIn = $('gp-speed');
-  const mating = $('gp-mating'), movesBody = $('gp-moves'), useGpu = $('gp-gpu');
+  const mating = $('gp-mating'), useGpu = $('gp-gpu');
   useGpu.checked = !!gpu; useGpu.disabled = !gpu;
   if (!gpu) useGpu.parentElement.title = 'This browser has no WebGPU, so the ground and the brains run on the CPU.';
-  const movesCells = [];
-  for (let r = 0; r < 3; r++) {
-    const tr = h('tr');
-    for (let c = 0; c < 3; c++) { const td = h('td'); movesCells.push(td); tr.append(td); }
-    movesBody.append(tr);
-  }
-  const stat = $('gp-stat'), clock = $('gp-clock'), inspect = $('gp-inspect'), readout = $('gp-readout'), readoutGrass = $('gp-readout-grass'), layerIn = $('gp-layer');
+  const stat = $('gp-stat'), clock = $('gp-clock'), inspect = $('gp-inspect'), readout = $('gp-readout'), layerIn = $('gp-layer');
 
   const brain = createBrainPanel($('gp-brain'));
-  let world = null, running = false, redrawChart = null, redrawGrass = null, lastChart = 0, lastRate = { at: performance.now(), t: 0, sps: 0 };
+  let world = null, running = false, redrawChart = null, lastChart = 0, lastRate = { at: performance.now(), t: 0, sps: 0 };
 
   const mix = (dst, a, b, f) => { dst[0] = a[0] + (b[0] - a[0]) * f; dst[1] = a[1] + (b[1] - a[1]) * f; dst[2] = a[2] + (b[2] - a[2]) * f; };   // (dst may be a or b)
   const EARTH = LANDVIEW.earth, GREEN = LANDVIEW.green, WATER = LANDVIEW.water, SOIL_N = [176, 96, 28], PALE = [236, 236, 230], SNOW = LANDVIEW.snow, COLD = [59, 130, 196], WARM = [235, 104, 52];
@@ -190,7 +194,11 @@ async function init() {
     }
     ctx.putImageData(img, 0, 0);
     const o = brain.selected;
-    if (o && world.at(o.r, o.c) === o) {   // ring the animal being watched
+    if (o && world.at(o.r, o.c) === o) {   // show where the animal being watched is looking (its field of view, as far as the last cell it can read), and ring it
+      const half = (fovDeg(o.eyes) / 2) * Math.PI / 180, mid = (o.h * 45 - 90) * Math.PI / 180, x = o.c + 0.5, y = o.r + 0.5;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, EYES.march, mid - half, mid + half); ctx.closePath();
+      ctx.fillStyle = 'rgba(255,255,255,0.22)'; ctx.fill();
+      ctx.lineWidth = 0.5; ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.stroke();
       ctx.lineWidth = 1.4; ctx.strokeStyle = '#000'; ctx.strokeRect(o.c - 1.5, o.r - 1.5, 4, 4);
       ctx.lineWidth = 0.7; ctx.strokeStyle = '#fff'; ctx.strokeRect(o.c - 1.5, o.r - 1.5, 4, 4);
     }
@@ -202,12 +210,6 @@ async function init() {
     if (now - lastRate.at > 700) {
       lastRate.sps = ((world.t - lastRate.t) * 1000) / (now - lastRate.at);
       lastRate.at = now; lastRate.t = world.t;
-    }
-    const total = world.moves.reduce((x, y) => x + y, 0);
-    for (let k = 0; k < 9; k++) {
-      const share = total ? world.moves[k] / total : 0;
-      movesCells[k].textContent = total ? (share * 100).toFixed(0) + '%' : '';
-      movesCells[k].style.backgroundColor = `rgba(${COLORS.prey[0]}, ${COLORS.prey[1]}, ${COLORS.prey[2]}, ${Math.min(0.85, share * 2.5)})`;
     }
     const gone = world.animals.size === 0 && world.t > 0;
     const w = world.when();
@@ -234,8 +236,8 @@ async function init() {
     if (w !== world) return;   // a new run began meanwhile
     paint(); status();
     const now = performance.now();
-    if (now - lastChart > 250) { redrawChart(); redrawGrass(); lastChart = now; }
-    if (world.animals.size === 0 && world.t > 0) { setRunning(false); redrawChart(); redrawGrass(); return; }
+    if (now - lastChart > 250) { redrawChart(); lastChart = now; }
+    if (world.animals.size === 0 && world.t > 0) { setRunning(false); redrawChart(); return; }
     if (running) requestAnimationFrame(frame);
   }
 
@@ -258,9 +260,8 @@ async function init() {
     inspect.textContent = 'Click any animal to see its brain.';
     if (!redrawChart) {
       const data = () => ({ ...world.history, xMax: Math.max(500, world.t) });
-      redrawChart = lineChart($('gp-chart'), readout, data, 'Prey and wolf population by step for the current run', [['prey', 'prey'], ['wolf', 'wolves']]);
-      redrawGrass = lineChart($('gp-chart-grass'), readoutGrass, data, 'Total grass on the map by step for the current run', [['grass', 'grass', 'grass in all']]);
-    } else { redrawChart(); redrawGrass(); }
+      redrawChart = lineChart($('gp-chart'), readout, data, 'Prey, wolf and grass by step for the current run, each on its own scale', [['prey', 'prey'], ['wolf', 'wolves'], ['grass', 'grass']], true);
+    } else { redrawChart(); }
     setRunning(false);
     btnRun.textContent = 'Run';
   }
@@ -277,13 +278,13 @@ async function init() {
     const w = world;
     try { await w.advance(); await pull(w); } finally { busy = false; }
     if (w !== world) return;
-    paint(); brain.update(world, true); status(); redrawChart(); redrawGrass();
+    paint(); brain.update(world, true); status(); redrawChart();
   });
   btnReset.addEventListener('click', reset);
   seedIn.addEventListener('change', reset);
   btnWolves.addEventListener('click', () => {
     world.releaseWolves(WOLVES);
-    paint(); status(); redrawChart(); redrawGrass();
+    paint(); status(); redrawChart();
   });
   layerIn.addEventListener('change', async () => { await pull(world); paint(); });
   useGpu.addEventListener('change', reset);

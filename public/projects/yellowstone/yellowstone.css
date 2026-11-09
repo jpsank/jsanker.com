@@ -86,9 +86,6 @@
 .gp th { font-weight: normal; color: var(--muted); border-bottom: 1px solid var(--rule); }
 
 /* which way prey step: a 3 x 3 table, middle = stay */
-.gp .moves { border-collapse: separate; border-spacing: 2px; margin: .6rem 0; font-size: .8rem; }
-.gp .moves caption { text-align: left; color: var(--muted); caption-side: top; padding-bottom: .25rem; }
-.gp .moves td { width: 3rem; height: 1.8rem; text-align: center; border: 1px solid var(--rule); border-radius: 3px; padding: 0; font-variant-numeric: tabular-nums; }
 
 /* the brain viewer */
 .gp .brain h5 { margin: 1rem 0 .3rem; font-size: .95rem; }

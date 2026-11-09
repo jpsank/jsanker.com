@@ -3,11 +3,11 @@
 //   the ground   grass, water, snow, nitrogen and ground temperature on every cell: a handful of passes over the whole grid per step, one thread per cell. The numbers stay
 //                on the card; each step the animals get a copy of grass, water, snow and ground temperature back, and what they did to the ground (grass eaten, nitrogen
 //                dropped, heat given off) goes up as a small delta.
-//   the brains   every animal's network, run for all of them at once. A brain is 7,092 numbers painted by the animal's genome (the CPPN); those are painted on the card too, the
-//                moment an animal is born, and kept there as 16-bit floats. Each step one workgroup per animal builds its 9 x 9 view, runs the network and picks its step.
+//   the brains   every animal's network, run for all of them at once. A brain is 7,335 numbers painted by the animal's genome (the CPPN); those are painted on the card too, the
+//                moment an animal is born, and kept there as 16-bit floats. Each step one workgroup per animal follows its fan of rays out for what it sees, runs the network and picks its action.
 //
 // The arithmetic is the same as land.js and sim.js, in 32-bit floats instead of 64-bit, so a run is repeatable on the same machine and card but not identical to a CPU run.
-import { BRAIN, PROGRAM, encodeProgram, packNet, connectionTable, VISION } from './sim.js';
+import { BRAIN, PROGRAM, encodeProgram, packNet, connectionTable, VISION, EYES, SAMPLES, N_VIEW, RAY_PACKED } from './sim.js';
 import { SHADOW_SOFT, SHADOW_REACH, LANDVIEW } from './land.js';
 
 const WG = 256;                 // threads per workgroup in the ground passes
@@ -392,7 +392,7 @@ ${MAIN} {
 /* ------------------------------------------------------------------ the brains */
 
 const BRAIN_WGSL = /* wgsl */ `
-struct BP { count: u32, n: u32, a: u32, b: u32, climb: f32, swim: f32, snowCost: f32, snowCap: f32, swimDepth: f32 }
+struct BP { count: u32, n: u32, a: u32, b: u32, climb: f32, swim: f32, snowCost: f32, snowCap: f32, swimDepth: f32, cellRun: f32, eye: f32, tol: f32 }
 @group(0) @binding(0) var<uniform> bp: BP;
 @group(0) @binding(1) var<uniform> rows: array<vec4<f32>, ${ROWS}>;
 @group(0) @binding(2) var<storage, read> an: array<vec4<u32>>;
@@ -402,8 +402,14 @@ struct BP { count: u32, n: u32, a: u32, b: u32, climb: f32, swim: f32, snowCost:
 @group(0) @binding(6) var<storage, read> wts: array<u32>;
 @group(0) @binding(7) var<storage, read_write> res: array<u32>;
 @group(0) @binding(8) var<storage, read> lightIn: array<f32>;
+@group(0) @binding(9) var<uniform> rayTab: array<vec4<u32>, ${RAY_PACKED.length / 4}>;
 
 const GREY: f32 = 0.0019607843;
+fn clarityOf(lit: f32) -> f32 { return ${VISION.floor} + (1.0 - ${VISION.floor}) * (1.0 - exp(-lit / ${VISION.half})); }
+var<private> BFROM: array<u32, ${SAMPLES}> = array<u32, ${SAMPLES}>(${EYES.from.map((v) => v + 'u').join(', ')});
+var<private> BTO: array<u32, ${SAMPLES}> = array<u32, ${SAMPLES}>(${EYES.seen.map((v) => v + 'u').join(', ')});
+var<private> DR: array<i32, 8> = array<i32, 8>(-1, -1, 0, 1, 1, 1, 0, -1);
+var<private> DC: array<i32, 8> = array<i32, 8>(0, 1, 1, 1, 0, -1, -1, -1);
 // the ground as the land view shows it (see landRgb in land.js)
 fn landColour(height: f32, slope: f32, grass: f32, water: f32, snow: f32) -> vec3<f32> {
   let relief = clamp(0.55 + ${LANDVIEW.heightGain} * height + ${LANDVIEW.slopeGain} * slope, 0.0, ${LANDVIEW.reliefMax});
@@ -414,7 +420,7 @@ fn landColour(height: f32, slope: f32, grass: f32, water: f32, snow: f32) -> vec
   return min(c, vec3<f32>(255.0)) / 255.0 - vec3<f32>(0.5);
 }
 const WORDS: u32 = ${BRAIN.words}u;
-var<workgroup> inp: array<f32, 243>;
+var<workgroup> inp: array<f32, ${N_VIEW}>;
 var<workgroup> h1: array<f32, 27>;
 var<workgroup> ov: array<f32, 18>;
 
@@ -436,40 +442,66 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
   let r = i32(pos / n);
   let c = i32(pos % n);
 
-  // what it sees: 9 x 9 cells, three numbers each
-  if (canAct) {
-    for (var k = t; k < 81u; k = k + 64u) {
-      let ci = i32(k / 9u);
-      let cj = i32(k % 9u);
-      let rr = r + ci - 4;
-      let cc = c + cj - 4;
-      var col = vec3<f32>(-0.5, -0.5, -0.5);
-      var lit = lightIn[pos];   // (past the edge of the map: the light where it stands)
-      if (rr >= 0 && rr < ni && cc >= 0 && cc < ni) {
-        lit = lightIn[u32(rr) * n + u32(cc)];
-        let who = cell[u32(rr) * n + u32(cc)];
-        if (who != 0u) {
-          let o = an[who - 1u];
-          col = vec3<f32>(0.5, bitcast<f32>(o.z), bitcast<f32>(o.w));
-        } else {
-          let k2 = u32(rr) * n + u32(cc);
-          let g4 = sA[k2];
-          col = landColour(stat[2u * k2].x, lightIn[n * n + k2], g4.x, g4.y, g4.z);
+  // what it sees: a fan of rays from the way it faces; a thread follows each ray out, and ground that rises into the line of sight hides what is behind it
+  let hd = (rec.x >> 24u) & 7u;
+  if (canAct && t < ${EYES.rays}u) {
+    let lvl = (rec.x >> 27u) & 7u;
+    let tab = ((lvl * 8u + hd) * ${EYES.rays}u + t) * ${EYES.march}u;
+    let h0 = stat[2u * pos].w + bp.eye;
+    let here = clarityOf(lightIn[pos]);
+    var best = -3.0e38;
+    var si = 0u;
+    var acc = vec3<f32>(0.0);
+    for (var st = 0u; st < ${EYES.march}u; st = st + 1u) {
+      let pk = rayTab[(tab + st) >> 2u][(tab + st) & 3u];
+      let dr = i32(pk >> 4u) - 8;
+      let dc = i32(pk & 15u) - 8;
+      let rr = r + dr;
+      let cc = c + dc;
+      let off = rr < 0 || rr >= ni || cc < 0 || cc >= ni;
+      var k = 0u;
+      var visible = true;
+      if (!off) {
+        k = u32(rr) * n + u32(cc);
+        let slope = (stat[2u * k].w - h0) / (sqrt(f32(dr * dr + dc * dc)) * bp.cellRun);
+        visible = slope >= best - bp.tol;
+        best = max(best, slope);
+      }
+      if (st >= BFROM[si]) {
+        var col = vec3<f32>(GREY, GREY, GREY);   // (behind a hill)
+        var f = here;
+        if (off) {
+          col = vec3<f32>(-0.5, -0.5, -0.5);   // (past the edge of the map)
+        } else if (visible) {
+          f = clarityOf(lightIn[k]);
+          let who = cell[k];
+          if (who != 0u) {
+            let o = an[who - 1u];
+            col = vec3<f32>(0.5, bitcast<f32>(o.z), bitcast<f32>(o.w));
+          } else {
+            let g4 = sA[k];
+            col = landColour(stat[2u * k].x, lightIn[n * n + k], g4.x, g4.y, g4.z);
+          }
+        }
+        acc = acc + vec3<f32>(GREY, GREY, GREY) + (col - vec3<f32>(GREY, GREY, GREY)) * f;
+        if (st == BTO[si]) {
+          let o3 = acc / f32(st - BFROM[si] + 1u);
+          let idx = (t * ${SAMPLES}u + si) * 3u;
+          inp[idx] = o3.x;
+          inp[idx + 1u] = o3.y;
+          inp[idx + 2u] = o3.z;
+          acc = vec3<f32>(0.0);
+          si = si + 1u;
         }
       }
-      let clarity = ${VISION.floor} + (1.0 - ${VISION.floor}) * (1.0 - exp(-lit / ${VISION.half}));   // (how well it sees this cell by the sun on it)
-      let o3 = vec3<f32>(GREY, GREY, GREY) + (col - vec3<f32>(GREY, GREY, GREY)) * clarity;
-      inp[k * 3u] = o3.x;
-      inp[k * 3u + 1u] = o3.y;
-      inp[k * 3u + 2u] = o3.z;
     }
   }
   workgroupBarrier();
 
-  let base = (rec.x & 0x7fffffffu) * WORDS;
+  let base = (rec.x & 0xffffffu) * WORDS;
   if (canAct && t < 27u) {
     var s = unh(base, ${OFF.b0}u + t);
-    for (var i = 0u; i < 243u; i = i + 1u) { s = s + unh(base, ${OFF.w0}u + i * 27u + t) * inp[i]; }
+    for (var i = 0u; i < ${N_VIEW}u; i = i + 1u) { s = s + unh(base, ${OFF.w0}u + i * 27u + t) * inp[i]; }
     h1[t] = tanh(s);
   }
   workgroupBarrier();
@@ -489,8 +521,15 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
       var best = 4u;
       var bv = -3.0e38;
       for (var k = 0u; k < 9u; k = k + 1u) {
-        let di = i32(k / 3u) - 1;
-        let dj = i32(k % 3u) - 1;
+        // the actions are turn (columns) by move (rows): turn first, then step along the new heading (see stepOf in sim.js)
+        let h2 = (hd + (k % 3u) + 7u) & 7u;
+        var di = 0;
+        var dj = 0;
+        if (k / 3u != 1u) {
+          let dir = select((h2 + 4u) & 7u, h2, k / 3u == 0u);
+          di = DR[dir];
+          dj = DC[dir];
+        }
         let rr = r + di;
         let cc = c + dj;
         if (rr < 0 || rr >= ni || cc < 0 || cc >= ni) { continue; }
@@ -522,7 +561,7 @@ fn main(@builtin(global_invocation_id) g: vec3<u32>) {
 }`;
 
 const SCATTER = /* wgsl */ `
-struct BP { count: u32, n: u32, a: u32, b: u32, climb: f32, swim: f32, snowCost: f32, snowCap: f32, swimDepth: f32 }
+struct BP { count: u32, n: u32, a: u32, b: u32, climb: f32, swim: f32, snowCost: f32, snowCap: f32, swimDepth: f32, cellRun: f32, eye: f32, tol: f32 }
 @group(0) @binding(0) var<uniform> bp: BP;
 @group(0) @binding(2) var<storage, read> an: array<vec4<u32>>;
 @group(0) @binding(3) var<storage, read_write> cell: array<u32>;
@@ -625,7 +664,7 @@ class Gpu {
       gather: await make('gather', PRELUDE + GATHER, { ...U2, 2: 'r', 3: 'r', 4: 'w', 5: 'w', 6: 'r', 7: 'r' }),
       creep: await make('creep', PRELUDE + CREEP, { ...U2, 2: 'r', 3: 'r', 4: 'w', 5: 'w', 6: 'r', 7: 'w' }),
       grow: await make('grow', PRELUDE + GROW, { ...U2, 2: 'r', 3: 'r', 4: 'w', 5: 'w', 6: 'r', 7: 'r', 8: 'w', 9: 'r' }),
-      brain: await make('brain', BRAIN_WGSL, { 0: 'u', 1: 'u', 2: 'r', 3: 'r', 4: 'r', 5: 'r', 6: 'r', 7: 'w', 8: 'r' }),
+      brain: await make('brain', BRAIN_WGSL, { 0: 'u', 1: 'u', 2: 'r', 3: 'r', 4: 'r', 5: 'r', 6: 'r', 7: 'w', 8: 'r', 9: 'u' }),
       scatter: await make('scatter', SCATTER, { 0: 'u', 2: 'r', 3: 'w' }),
       deltas: await make('deltas', DELTAS, { 0: 'u', 2: 'r', 3: 'r', 4: 'w' }),
       cppn: await make('cppn', CPPN_WGSL, { 0: 'u', 2: 'r', 3: 'r', 4: 'r', 5: 'w' }),
@@ -693,6 +732,8 @@ class GpuSim {
     this.anCap = 0;
     this.progCap = 0;
     this.BP = buf(48, UNI, 'brain params');
+    this.rayTab = buf(RAY_PACKED.length * 4, UNI, 'rays');
+    d.queue.writeBuffer(this.rayTab, 0, RAY_PACKED);
     this.DP = buf(16, UNI, 'delta params');
     this.tCap = 0;
     this.CP = buf(16, UNI, 'cppn params');
@@ -810,13 +851,13 @@ class GpuSim {
     const ad = this.anData, af = this.anF;
     for (let k = 0; k < count; k++) {
       const a = list[k];
-      ad[4 * k] = (a.slot | (a.energy > 1 ? 0x80000000 : 0)) >>> 0;
+      ad[4 * k] = (a.slot | (a.h << 24) | (a.eyes << 27) | (a.energy > 1 ? 0x80000000 : 0)) >>> 0;
       ad[4 * k + 1] = a.r * n + a.c;
       af[4 * k + 2] = a.col[1]; af[4 * k + 3] = a.col[2];
     }
     if (count) q.writeBuffer(this.an, 0, ad, 0, count * 4);
     const bpd = new ArrayBuffer(48), bpu = new Uint32Array(bpd), bpf = new Float32Array(bpd);
-    bpu[0] = count; bpu[1] = n; bpf[4] = w.climb; bpf[5] = w.swim; bpf[6] = w.snowCost; bpf[7] = w.snowCap; bpf[8] = w.swimDepth;
+    bpu[0] = count; bpu[1] = n; bpf[4] = w.climb; bpf[5] = w.swim; bpf[6] = w.snowCost; bpf[7] = w.snowCap; bpf[8] = w.swimDepth; bpf[9] = L.cellRun ?? 1; bpf[10] = L.metresPerUnit ? EYES.eye / L.metresPerUnit : 0; bpf[11] = EYES.tol;
     q.writeBuffer(this.BP, 0, bpd);
 
     // newborn brains: painted from their genomes' programs
@@ -887,7 +928,7 @@ class GpuSim {
       bp.setBindGroup(0, this.bg(P.scatter, this.BP, this.an, this.cell));
       bp.dispatchWorkgroups(Math.ceil(count / 64));
       bp.setPipeline(P.brain.pipeline);
-      bp.setBindGroup(0, this.bg(P.brain, this.BP, this.rows, this.an, this.cell, A(), this.stat, this.wts, this.res, this.lightBuf));
+      bp.setBindGroup(0, this.bg(P.brain, this.BP, this.rows, this.an, this.cell, A(), this.stat, this.wts, this.res, this.lightBuf, this.rayTab));
       bp.dispatchWorkgroups(Math.min(count, 65535), Math.ceil(count / 65535));
       bp.end();
       enc.copyBufferToBuffer(this.res, 0, this.readRes, 0, count * 4);

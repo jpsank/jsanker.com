@@ -3,8 +3,8 @@
 // Animals live on a 400x400 map of land, with walls all round (land.js: elevation, water, nitrogen and grass on every cell). Each animal carries a
 // genome: a small network (a CPPN) that is never run on the world directly. Instead it is queried once per pair of
 // neurons of a fixed "substrate" to paint the weights of the network that does the sensing and acting (HyperNEAT-style).
-// An animal sees a 9x9 patch of colours and answers with how much it wants to step to each of the nine cells around it (weighed
-// against what the step costs, so climbing is dear) and where to breed. Every animal decides from the same snapshot of the world at the start of the step (decide), then they act one at a time in a random order (act).
+// An animal faces one of eight ways and sees a fan of rays out from there (a wide field for grazers, a narrow one for hunters; hills hide what is behind them) as colours, and answers with how much
+// it wants each of nine actions, turning left, straight or right by moving forward, staying or back (weighed against what the step costs, so climbing is dear), and where to breed. Every animal decides from the same snapshot of the world at the start of the step (decide), then they act one at a time in a random order (act).
 // With WebGPU the ground and the decisions are worked out on the graphics card (gpu.js); everything else, including acting, is here either way. A diet gene, from 0 (digests grass) to 1 (digests meat),
 // decides what it can live on; hunters are the ones whose diet has moved toward meat.
 //
@@ -274,6 +274,48 @@ function hasInputSource(list) {
   return !!list && list.some((e) => e.s < 0);
 }
 
+/* ------------------------------------------------------------------ eyes and headings */
+
+/** The eight headings, clockwise from north, as the (row, column) step each one is. */
+export const DIRS = [[-1, 0], [-1, 1], [0, 1], [1, 1], [1, 0], [1, -1], [0, -1], [-1, -1]];
+
+/** An animal looks along a fan of `rays` rays from the way it faces, spread over its field of view. Each ray is followed `march` cells out, and the colour is read at four distances, each the average over the cells from `from` to `seen` (counting from 0:
+ *  cell 1, cell 2, cells 3 and 4, cells 5 and 6), so that no cell along a ray goes unseen. Ground that rises into the line of sight hides what is behind it. Herbivores see nearly all the way round (`wide` degrees) and hunters only a narrow field (`narrow`), the
+ *  same number of rays packed closer: the field depends on the diet in `levels` steps, so that the card and the processor can use one table of rays. The eye is `eye` metres above the ground. */
+export const EYES = { rays: 21, march: 6, from: [0, 1, 2, 4], seen: [0, 1, 3, 5], levels: 6, wide: 300, narrow: 100, eye: 2, tol: 0.005 };
+export const SAMPLES = EYES.seen.length;
+export const N_VIEW = EYES.rays * SAMPLES * 3;
+export const eyeLevel = (diet) => Math.min(EYES.levels - 1, Math.max(0, Math.floor(diet * EYES.levels)));
+export const fovDeg = (level) => EYES.wide + ((EYES.narrow - EYES.wide) * level) / (EYES.levels - 1);
+
+/** For every (field of view, heading, ray, step) the cell that step lands on, as a row and column offset. */
+const RAY_DR = new Int8Array(EYES.levels * 8 * EYES.rays * EYES.march), RAY_DC = new Int8Array(RAY_DR.length), RAY_INV = new Float64Array(RAY_DR.length);   // (and one over how far away that cell is)
+export const RAY_PACKED = new Uint32Array(RAY_DR.length);   // (row + 8) x 16 + (column + 8), for the card
+{
+  let q = 0;
+  for (let lv = 0; lv < EYES.levels; lv++) for (let h = 0; h < 8; h++) for (let ray = 0; ray < EYES.rays; ray++) {
+    const bearing = ((h * 45 + fovDeg(lv) * (ray / (EYES.rays - 1) - 0.5)) * Math.PI) / 180;   // clockwise from north
+    for (let st = 1; st <= EYES.march; st++) {
+      const dr = Math.round(-st * Math.cos(bearing)), dc = Math.round(st * Math.sin(bearing));
+      RAY_DR[q] = dr; RAY_DC[q] = dc; RAY_INV[q] = 1 / Math.hypot(dr, dc); RAY_PACKED[q] = (dr + 8) * 16 + (dc + 8); q++;
+    }
+  }
+}
+
+/** The nine actions the network scores are a grid of turn (columns: left, none, right) by move (rows: forward, stay, back). The turn is made first,
+ *  and then the step is taken along the new heading. The turn is one eighth of a circle. Returns [new heading, row step, column step]. */
+export function stepOf(h, k) {
+  const q = h * 9 + k;
+  return [STEP_H[q], STEP_DI[q], STEP_DJ[q]];
+}
+const STEP_H = new Int8Array(72), STEP_DI = new Int8Array(72), STEP_DJ = new Int8Array(72);   // (stepOf, for every heading and action, worked out once)
+for (let h = 0; h < 8; h++) for (let k = 0; k < 9; k++) {
+  const row = (k / 3) | 0, h2 = (h + (k % 3) - 1 + 8) & 7, d = row === 1 ? [0, 0] : DIRS[row === 0 ? h2 : (h2 + 4) & 7], q = h * 9 + k;
+  STEP_H[q] = h2; STEP_DI[q] = d[0]; STEP_DJ[q] = d[1];
+}
+/** The breeding grid is a map of the animal's neighbours as it faces: which heading, relative to its own, each cell stands for (-1 for itself). */
+export const BREED_REL = [7, 0, 1, 6, -1, 2, 5, 4, 3];
+
 /* ------------------------------------------------------------------ the phenotype (phenotype_nn.py) */
 
 /** Coordinates of every neuron of one substrate layer, each axis normalised to [-1, 1], C order. */
@@ -295,7 +337,19 @@ function layerCoords(dims) {
 
 // The last layer is a 3 x 3 grid of cells, one per place the animal could act on (itself in the middle). It has two such grids:
 // how much it wants to step to each cell (weighed against what the step costs), and where to breed.
-const ANIMAL_NET = [[9, 9, 3], [3, 3, 3], [3, 3, 2]];
+const ANIMAL_NET = [[EYES.rays, SAMPLES, 3], [3, 3, 3], [3, 3, 2]];
+
+/** Where each input neuron sits, in the same frame as the action cells (first axis: rows, forward is -1; second: columns, right is +1): the distance a ray reaches, 0 near to -1 far, and which ray, from the
+ *  far left of its field of view to the far right, so a network can tie what is seen out to the left to turning left. The third axis is the colour. */
+function retinaCoords() {
+  const out = new Float64Array(EYES.rays * SAMPLES * 3 * 3);   // (three coordinates for each of the three colours of each sample)
+  let k = 0;
+  for (let ray = 0; ray < EYES.rays; ray++) for (let d = 0; d < SAMPLES; d++) for (let c = 0; c < 3; c++) {
+    out[k++] = -d / (SAMPLES - 1); out[k++] = (ray / (EYES.rays - 1)) * 2 - 1; out[k++] = c - 1;
+  }
+  return out;
+}
+const RETINA = retinaCoords();
 const COORDS = new Map();
 function coordsFor(dims) {
   const key = dims.join('x');
@@ -325,7 +379,7 @@ function buildNet(g, substrate) {
   const layers = [];
   for (let l = 1; l < substrate.length; l++) {
     const last = l === substrate.length - 1;
-    const cj = last ? actionCoords(substrate[l][2]) : coordsFor(substrate[l]), ci = coordsFor(substrate[l - 1]);
+    const cj = last ? actionCoords(substrate[l][2]) : coordsFor(substrate[l]), ci = l === 1 ? RETINA : coordsFor(substrate[l - 1]);
     const nj = cj.length / 3, ni = ci.length / 3;
     const W = new Float32Array(nj * ni), B = new Float32Array(nj);
     for (let j = 0; j < nj; j++) {
@@ -361,7 +415,7 @@ function buildNet(g, substrate) {
 // neighbouring numbers), then the biases. A genome is sent to the GPU as a small program (see encodeProgram) and the GPU paints the weights.
 const layerSizes = ANIMAL_NET.slice(1).map((d, l) => ({ ni: ANIMAL_NET[l].reduce((a, b) => a * b, 1), nj: l === ANIMAL_NET.length - 2 ? 9 * d[2] : d.reduce((a, b) => a * b, 1) }));
 export const BRAIN = { layers: layerSizes, halves: layerSizes.reduce((a, L) => a + L.ni * L.nj + L.nj, 0) };
-BRAIN.words = BRAIN.halves / 2;
+BRAIN.words = Math.ceil(BRAIN.halves / 2);   // (the numbers are stored in pairs: an odd count leaves one spare)
 export const PROGRAM = { maxNodes: 48, maxEdges: 320 };
 PROGRAM.words = 3 + 4 * PROGRAM.maxNodes + 2 * PROGRAM.maxEdges;
 
@@ -405,7 +459,7 @@ export function encodeProgram(g, dst, off) {
 
 /** A genome's whole brain as packed 16-bit weights, built on the CPU (for the rare genome too big for encodeProgram). */
 export function packNet(g) {
-  const net = buildNet(g, ANIMAL_NET), halves = new Uint16Array(BRAIN.halves);
+  const net = buildNet(g, ANIMAL_NET), halves = new Uint16Array(BRAIN.words * 2);
   let o = 0;
   for (const L of net.layers) {
     for (let i = 0; i < L.ni; i++) for (let j = 0; j < L.nj; j++) halves[o++] = toHalf(L.W[j * L.ni + i]);
@@ -416,11 +470,11 @@ export function packNet(g) {
 
 /** For every number in a brain, in storage order, the six inputs of the CPPN that paints it: where the receiving neuron is, and where the sending one is. */
 export function connectionTable() {
-  const out = new Float32Array(BRAIN.halves * 6);
+  const out = new Float32Array(BRAIN.words * 2 * 6);
   let o = 0;
   for (let l = 1; l < ANIMAL_NET.length; l++) {
     const last = l === ANIMAL_NET.length - 1;
-    const cj = last ? actionCoords(ANIMAL_NET[l][2]) : coordsFor(ANIMAL_NET[l]), ci = coordsFor(ANIMAL_NET[l - 1]);
+    const cj = last ? actionCoords(ANIMAL_NET[l][2]) : coordsFor(ANIMAL_NET[l]), ci = l === 1 ? RETINA : coordsFor(ANIMAL_NET[l - 1]);
     const nj = cj.length / 3, ni = ci.length / 3;
     for (let i = 0; i < ni; i++) for (let j = 0; j < nj; j++) { for (let q = 0; q < 3; q++) { out[o++] = cj[j * 3 + q]; } for (let q = 0; q < 3; q++) out[o++] = ci[i * 3 + q]; }
     for (let j = 0; j < nj; j++) { out[o++] = cj[j * 3]; out[o++] = cj[j * 3 + 1]; out[o++] = cj[j * 3 + 2]; out[o++] = -1; out[o++] = 0; out[o++] = 0; }
@@ -477,7 +531,6 @@ export class World {
     this.land = new Land({ seed: opts.seed ?? 1, size: this.n, terrain, lakes: terrain ? (opts.lakes === false ? null : opts.lakes ?? LAKES) : null, ...(opts.land || {}) });
     this.swimDepth = opts.swimDepth ?? (terrain ? 1000 / this.land.waterMm : 3);   // that deep (a metre on the real map): feet leave the bottom
     this.gpu = opts.gpu ? opts.gpu.attach(this) : null;   // the ground and the brains run on the graphics card when there is one (see gpu.js)
-    this.moves = new Float64Array(9);     // how often animals chose each of the 9 steps (row-major, middle = stay)
     this.t = 0;
     this.climate();
     this.grid = new Array(this.n * this.n).fill(null);
@@ -488,7 +541,7 @@ export class World {
     this.eaten = 0;      // grass eaten
     this.hunted = 0;     // animals killed and eaten
     this.births = { count: 0, mated: 0 };
-    this.in9 = new Float32Array(243);
+    this.view = new Float32Array(N_VIEW);
     this.nPrey = 0; this.nWolf = 0;
 
     this.place = (org) => {
@@ -540,6 +593,7 @@ export class World {
     const id = this.nextId = (this.nextId ?? -1) + 1;
     const org = {
       id, genome, diet, r: 0, c: 0, energy: 50,
+      h: this.rng.int(8), eyes: eyeLevel(diet),   // which way it faces (0 north, then clockwise by 45 degrees), and its field of view (see EYES)
       bodyN: 0, plant: 0, plantN: 0, meat: 0, meatN: 0,   // body nitrogen, and what is in the gut
       col: [0.5, diet - 0.5, -0.5],
       dec: 255,   // what it decided this step (see decide)
@@ -552,19 +606,19 @@ export class World {
     return org;
   }
 
-  /** The 3 x 3 steps, row-major: which one the brain's output and the costs agree on. Returns [di, dj, index, cost]. */
+  /** The nine actions (see stepOf): which one the brain's output and the costs agree on. Returns [row step, column step, action, cost]. */
   choose(a, out) {
     const n = this.n, E = this.land.elev, W = this.land.water, S = this.land.snow, here = E[a.r * n + a.c];
-    let best = 4, bv = -Infinity, bc = REST;
+    let best = 4, bv = -Infinity, bc = REST, bi = 0, bj = 0;
     for (let k = 0; k < 9; k++) {
-      const di = ((k / 3) | 0) - 1, dj = (k % 3) - 1;
+      const di = STEP_DI[a.h * 9 + k], dj = STEP_DJ[a.h * 9 + k];
       const rr = a.r + di, cc = a.c + dj;
       const cost = rr < 0 || rr >= n || cc < 0 || cc >= n ? WALL : this.stepCost(di, dj, E[rr * n + cc] - here, W[rr * n + cc], S[rr * n + cc]);
-      // wanting a step twice as much cancels a step that costs twice as much: compare exp(output) / cost
+      // wanting an action twice as much cancels one that costs twice as much: compare exp(output) / cost
       const v = out[k * 2] - Math.log(cost);
-      if (v > bv) { bv = v; best = k; bc = cost; }
+      if (v > bv) { bv = v; best = k; bc = cost; bi = di; bj = dj; }
     }
-    return [((best / 3) | 0) - 1, (best % 3) - 1, best, bc];
+    return [bi, bj, best, bc];
   }
 
   /** Energy a step costs: the effort of acting at all, more for a longer step, more again for each unit of height climbed (going down is free),
@@ -584,27 +638,46 @@ export class World {
     return [((best / 3) | 0) - 1, (best % 3) - 1, best];
   }
 
-  /** Fill `buf` with the 9 x 9 x 3 colour field around (r, c): animals are coloured by diet, the ground as it looks in the land view (bare ground shaded by height and by the slope's light, with grass, water
-   *  and snow over it: see `landRgb`), each number being the colour's red, green or blue as (value / 255) - 0.5. Every cell fades toward grey by how clearly the sun lights it (see `clarityOf`);
-   *  past the edge of the map, where there is nothing to light, by the light on the cell the animal stands on. (`land.light` must be for the current sun: see `Land.ensureLight`.) */
-  look(r, c, buf) {
-    const n = this.n, L = this.land, LT = L.light, half = 4, here = clarityOf(LT[r * n + c]), rgb = this.seenRgb ??= new Float64Array(3);
-    let p = 0;
-    for (let i = 0; i < 9; i++) {
-      const rr = r + i - half;
-      for (let j = 0; j < 9; j++) {
-        const cc = c + j - half, off = rr < 0 || rr >= n || cc < 0 || cc >= n;
-        const o = off ? null : this.grid[rr * n + cc];
-        const f = off ? here : clarityOf(LT[rr * n + cc]);
-        let c0, c1, c2;
-        if (off) { c0 = c1 = c2 = -0.5; }   // past the edge of the map: black
-        else if (o) { [c0, c1, c2] = o.col; }
-        else {
-          const k = rr * n + cc;
-          landRgb(L.elev[k], L.slope[k], L.grass[k], L.water[k], L.snow[k], rgb);
-          c0 = rgb[0] / 255 - 0.5; c1 = rgb[1] / 255 - 0.5; c2 = rgb[2] / 255 - 0.5;
+  /** Fill `buf` with what animal `a` sees: for each of the rays across its field of view (from the way it faces; see EYES), the colour of the cell at each distance it reads, as three numbers (red, green, blue as
+   *  (value / 255) - 0.5). The ground is as the land view shows it (bare ground shaded by height and by the slope's light, with grass, water and snow over it: see `landRgb`) and other animals are coloured by diet.
+   *  Ground that rises into the line of sight hides what is behind it (seen as grey), and every cell fades toward grey by how clearly the sun lights it (see `clarityOf`); past the edge of the map is black.
+   *  (`land.light` must be for the current sun: see `Land.ensureLight`.) */
+  look(a, buf) {
+    const n = this.n, L = this.land, LT = L.light, SK = L.skyH ?? L.elev, invRun = 1 / (L.cellRun ?? 1), eyeH = L.metresPerUnit ? EYES.eye / L.metresPerUnit : 0;
+    const R = EYES.rays, M = EYES.march, tol = EYES.tol, seen = EYES.seen, from = EYES.from, rgb = this.seenRgb ??= new Float64Array(3);
+    const i0 = a.r * n + a.c, h0 = SK[i0] + eyeH, here = clarityOf(LT[i0]);
+    let tab = (a.eyes * 8 + a.h) * R * M, p = 0;
+    for (let ray = 0; ray < R; ray++, tab += M) {
+      let best = -Infinity, si = 0, s0 = 0, s1 = 0, s2 = 0;
+      for (let st = 0; st < M; st++) {
+        const dr = RAY_DR[tab + st], dc = RAY_DC[tab + st], rr = a.r + dr, cc = a.c + dc;
+        const off = rr < 0 || rr >= n || cc < 0 || cc >= n;
+        let k = 0, visible = true;
+        if (!off) {
+          k = rr * n + cc;
+          const slope = (SK[k] - h0) * RAY_INV[tab + st] * invRun;
+          visible = slope >= best - tol;
+          if (slope > best) best = slope;
         }
-        buf[p++] = SEEN_GREY + (c0 - SEEN_GREY) * f; buf[p++] = SEEN_GREY + (c1 - SEEN_GREY) * f; buf[p++] = SEEN_GREY + (c2 - SEEN_GREY) * f;
+        if (st < from[si]) continue;
+        let c0, c1, c2, f = here;
+        if (off) { c0 = c1 = c2 = -0.5; }   // past the edge of the map: black
+        else if (!visible) { c0 = c1 = c2 = SEEN_GREY; }   // behind a hill
+        else {
+          f = clarityOf(LT[k]);
+          const o = this.grid[k];
+          if (o) { const oc = o.col; c0 = oc[0]; c1 = oc[1]; c2 = oc[2]; }
+          else {
+            landRgb(L.elev[k], L.slope[k], L.grass[k], L.water[k], L.snow[k], rgb);
+            c0 = rgb[0] / 255 - 0.5; c1 = rgb[1] / 255 - 0.5; c2 = rgb[2] / 255 - 0.5;
+          }
+        }
+        s0 += SEEN_GREY + (c0 - SEEN_GREY) * f; s1 += SEEN_GREY + (c1 - SEEN_GREY) * f; s2 += SEEN_GREY + (c2 - SEEN_GREY) * f;
+        if (st === seen[si]) {
+          const w = 1 / (st - from[si] + 1);
+          buf[p++] = s0 * w; buf[p++] = s1 * w; buf[p++] = s2 * w;
+          s0 = s1 = s2 = 0; si++;
+        }
       }
     }
   }
@@ -612,16 +685,16 @@ export class World {
   /** What an animal sees and decides right now, without changing anything. */
   brain(org) {
     this.land.ensureLight(this.clim);
-    this.look(org.r, org.c, this.in9);
-    const input = Float32Array.from(this.in9);
+    this.look(org, this.view);
+    const input = Float32Array.from(this.view);
     if (org.energy <= 1) return { k: 9, input, layers: [], act: false, why: 'too weak to act' };
-    const out = org.net.forward(this.in9);
+    const out = org.net.forward(this.view);
     const layers = org.net.bufs.map((b) => Float32Array.from(b));
     const move = this.choose(org, out);
     const breed = World.argmax9(out, 1, 2);
     const n = this.n, E = this.land.elev, W = this.land.water, S = this.land.snow, here = E[org.r * n + org.c], costs = [];
     for (let k = 0; k < 9; k++) {
-      const di = ((k / 3) | 0) - 1, dj = (k % 3) - 1, rr = org.r + di, cc = org.c + dj, j = rr * n + cc;
+      const [, di, dj] = stepOf(org.h, k), rr = org.r + di, cc = org.c + dj, j = rr * n + cc;
       costs.push(rr < 0 || rr >= n || cc < 0 || cc >= n ? WALL : this.stepCost(di, dj, E[j] - here, W[j], S[j]));
     }
     return { k: 9, input, layers, act: true, move, breed, costs };
@@ -688,7 +761,7 @@ export class World {
       // the child's body nitrogen comes from its parents'
       const g1 = p1.bodyN * 0.2; p1.bodyN -= g1; o.bodyN += g1;
       const g2 = p2.bodyN * 0.2; p2.bodyN -= g2; o.bodyN += g2;
-      o.r = r; o.c = c;
+      o.r = r; o.c = c; o.h = p1.h;
       this.grid[r * n + c] = o;
       p1.energy -= cost; p2.energy -= cost;   // an asexual parent pays twice, as in the original
       this.births.count++;
@@ -751,8 +824,8 @@ export class World {
     this.land.ensureLight(this.clim);
     for (const a of list) {
       if (a.energy <= 1) { a.dec = 255; continue; }
-      this.look(a.r, a.c, this.in9);
-      const out = a.net.forward(this.in9);
+      this.look(a, this.view);
+      const out = a.net.forward(this.view);
       a.dec = this.choose(a, out)[2] | (World.argmax9(out, 1, 2)[2] << 4);
     }
   }
@@ -764,8 +837,8 @@ export class World {
     for (const a of rng.shuffle(list)) {
       if (this.animals.get(a.id) !== a) continue;               // eaten earlier this step
       if (a.dec !== 255) {
-        const pick = a.dec & 15, bk = a.dec >> 4, di = ((pick / 3) | 0) - 1, dj = (pick % 3) - 1;
-        this.moves[pick]++;
+        const pick = a.dec & 15, bk = a.dec >> 4, h0 = a.h, [h2, di, dj] = stepOf(h0, pick);
+        a.h = h2;   // (it turns whether or not the step works)
         if (di || dj) {
           const r2 = a.r + di, c2 = a.c + dj, to = r2 * n + c2;   // (the brain never picks a wall)
           const cost = this.stepCost(di, dj, E[to] - E[a.r * n + a.c], W[to], S[to]);
@@ -783,8 +856,10 @@ export class World {
           if (tread > 0) { a.energy -= tread; this.land.heat(here, tread); }
         }
         if (a.energy > 100) {
-          const bi = ((bk / 3) | 0) - 1, bj = (bk % 3) - 1;
-          if (a.r + bi >= 0 && a.r + bi < n && a.c + bj >= 0 && a.c + bj < n) wants.set(a.id, [a.r + bi, a.c + bj]);   // (no breeding into a wall)
+          if (BREED_REL[bk] >= 0) {   // (the breeding grid is a map of its neighbours as it faced when it looked)
+            const [bi, bj] = DIRS[(h0 + BREED_REL[bk]) & 7];
+            if (a.r + bi >= 0 && a.r + bi < n && a.c + bj >= 0 && a.c + bj < n) wants.set(a.id, [a.r + bi, a.c + bj]);   // (no breeding into a wall)
+          }
         }
       }
       this.feed(a);
