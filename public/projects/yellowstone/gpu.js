@@ -9,7 +9,7 @@
 // The arithmetic is the same as land.js and sim.js, in 32-bit floats instead of 64-bit, so a run is repeatable on the same machine and card but not identical to a CPU run.
 import { BRAIN, PROGRAM, encodeProgram, packNet, VISION, EYES, SAMPLES, N_VIEW, RAY_PACKED, RETINA, OUTPUTS } from './sim.js';
 import { ES } from './esnet.js';
-import { SHADOW_SOFT, SHADOW_REACH, LANDVIEW } from './land.js';
+import { SHADOW_SOFT, SHADOW_REACH, LANDVIEW, PHYS } from './land.js';
 
 const WG = 256;                 // threads per workgroup in the ground passes
 const SLOT_CAP = 200000;        // never more brains than this
@@ -18,15 +18,15 @@ const EDGE0 = 3 + 4 * PROGRAM.maxNodes;   // where a program's connections start
 /* ------------------------------------------------------------------ the ground */
 
 const LAND_FIELDS = [
-  ['n', 'u32'], ['size', 'u32'], ['raining', 'f32'], ['rainD', 'f32'], ['lag', 'f32'], ['conduct', 'f32'], ['heatGain', 'f32'], ['lapse', 'f32'], ['kOro', 'f32'], ['sunHeat', 'f32'], ['radCool', 'f32'], ['albedo', 'f32'], ['snowAlbedo', 'f32'], ['snowAlbedoDepth', 'f32'], ['invWs', 'f32'], ['retain', 'f32'], ['flowMin', 'f32'], ['soakMax', 'f32'], ['floodStart', 'f32'], ['floodEnd', 'f32'], ['nMobile', 'f32'],
-  ['waterHeat', 'f32'], ['waterHeatMax', 'f32'], ['meltRate', 'f32'], ['deposit', 'f32'], ['evap', 'f32'], ['seep', 'f32'], ['floodSeep', 'f32'], ['seepMax', 'f32'],
+  ['n', 'u32'], ['size', 'u32'], ['raining', 'f32'], ['rainD', 'f32'], ['heatGain', 'f32'], ['kOro', 'f32'], ['albedo', 'f32'], ['snowAlbedo', 'f32'], ['snowAlbedoDepth', 'f32'], ['invWs', 'f32'], ['retain', 'f32'], ['flowMin', 'f32'], ['soakMax', 'f32'], ['floodStart', 'f32'], ['floodEnd', 'f32'], ['nMobile', 'f32'],
+  ['waterHeatMax', 'f32'], ['cDry', 'f32'], ['cWaterU', 'f32'], ['kg', 'f32'], ['hUnstable', 'f32'], ['rGround', 'f32'], ['snowRes', 'f32'], ['iceRes', 'f32'], ['gDeep', 'f32'], ['gLake', 'f32'], ['iceMin', 'f32'], ['snowRetain', 'f32'], ['gTop', 'f32'], ['coldK', 'f32'], ['gammaDry', 'f32'], ['freeLapse', 'f32'], ['windC', 'f32'], ['windR', 'f32'], ['dtDx', 'f32'], ['hblMin', 'f32'], ['hblMax', 'f32'], ['kBL', 'f32'], ['drain', 'f32'], ['drainMax', 'f32'], ['mixConv', 'f32'], ['mixStable', 'f32'], ['rhoCp', 'f32'], ['deepK', 'f32'], ['lnTrans', 'f32'], ['lwCloud', 'f32'], ['emis', 'f32'], ['hAir', 'f32'], ['hSnow', 'f32'], ['ptAlpha', 'f32'], ['wetCrit', 'f32'], ['dt', 'f32'], ['accel', 'f32'], ['deposit', 'f32'], ['seep', 'f32'], ['floodSeep', 'f32'], ['seepMax', 'f32'],
   ['flow', 'f32'], ['creep', 'f32'], ['leach', 'f32'], ['outletRate', 'f32'], ['regrow', 'f32'], ['gMax', 'f32'], ['waterPer', 'f32'], ['nPer', 'f32'], ['shadows', 'f32'], ['cellRun', 'f32'], ['skyMax', 'f32'],
 ];
 const PARAM_BYTES = LAND_FIELDS.length * 4;
 const ROWS = 1536;   // vec4s in the row table: two for every row, then one for every column (so maps up to 512 across)
 
 // state: A = (grass, water, snow, ground temperature) and B = nitrogen, per cell, each kept twice (ping-pong) for the passes that read neighbours.
-// stat = per cell two vec4s: (height, km above the map's average height, is-outlet, the height the sun sees) and the slope normal (east, north, up, 0).
+// stat = per cell two vec4s: (height, km above the map's average height, is-outlet, the height the sun sees) and the slope normal (east, north, up, the height above sea level in km).
 // rows = per row two vec4s: (sun up, east, north, flat-ground light on the middle meridian) and (air temperature, rain share, sin and cos of the latitude); then per column one vec4:
 //   (cos of the declination x cos of the hour angle there, minus cos of the declination x sin of it, sin of the declination, 0). The sun's place at a cell comes from the two.
 // stat.w of a cell's first vec4 = the height the sun sees there (the lakes' surface, not their bed), for the shadows.
@@ -47,7 +47,8 @@ fn wgSum(t: u32, v: f32) -> f32 {
   workgroupBarrier();
   return total;
 }
-fn cap(w: f32) -> f32 { return 1.0 + P.waterHeat * min(P.waterHeatMax, w); }
+fn heatCap(w: f32) -> f32 { return P.cDry + P.cWaterU * min(P.waterHeatMax, w); }   // J/m2/K of the ground layer: dry soil and the water in it
+fn capRel(w: f32) -> f32 { return heatCap(w) / P.cDry; }
 fn nbr(i: u32, d: u32) -> u32 {
   let n = P.n;
   let r = i / n;
@@ -99,7 +100,7 @@ ${MAIN} {
   var a = sA[i];
   let d = dl[i];
   a.x = max(0.0, a.x - d.x);
-  a.w = a.w + P.heatGain * d.z / cap(a.y);
+  a.w = a.w + P.heatGain * d.z / capRel(a.y);
   sA[i] = a;
   sB[i] = sB[i] + d.y;
 }`;
@@ -148,45 +149,163 @@ ${MAIN} {
   lightOut[P.size + i] = lit - u;   // (the second half of the buffer: the light minus what flat ground there gets, the slope's share of the land view's shading)
 }`;
 
-// ground temperature: closes in on the air, and on the cells around it
+// the ground's energy balance (see Land.warmGround): the surface (the skin of snow, ice or ground that meets the air) is where the sun, the sky, the air and evaporation balance, and it passes heat down to the
+// ground layer through the snow and ice on it. Snow and ice take the skin no warmer than freezing, and what would warm it melts them; deep water freezes over. These move water, so they are done here too.
 const SOIL = /* wgsl */ `
 @group(0) @binding(2) var<storage, read> sA: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> oA: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read> stat: array<vec4<f32>>;
 @group(0) @binding(5) var<storage, read> lightIn: array<f32>;
+@group(0) @binding(6) var<storage, read_write> acc: array<f32>;
+@group(0) @binding(7) var<storage, read_write> iceBuf: array<f32>;
+@group(0) @binding(8) var<storage, read> thIn: array<f32>;
+@group(0) @binding(9) var<storage, read_write> thOut: array<f32>;
+fn thFreeAt(j: u32, up: f32) -> f32 {
+  let rj = j / P.n;
+  return rows[2u * rj + 1u].x + (P.gammaDry - P.freeLapse) * (stat[2u * j + 1u].w + up);
+}
 ${MAIN} {
   let i = g.x;
-  if (i >= P.size) { return; }
-  let n = P.n;
-  let r = i / n;
-  let c = i - r * n;
-  let a = sA[i];
-  let st = stat[2u * i];
-  let nm = stat[2u * i + 1u];
-  let rw = rows[2u * r];
-  let rw2 = rows[2u * r + 1u];
-  let r0 = select(r, r - 1u, r > 0u);
-  let r1 = select(r, r + 1u, r + 1u < n);
-  let c0 = select(c, c - 1u, c > 0u);
-  let c1 = select(c, c + 1u, c + 1u < n);
-  let around = sA[r0 * n + c0].w + sA[r0 * n + c].w + sA[r0 * n + c1].w + sA[r * n + c0].w + sA[r * n + c1].w + sA[r1 * n + c0].w + sA[r1 * n + c].w + sA[r1 * n + c1].w;
-  let light = lightIn[i];
-  let s = a.w;
-  let alb = P.albedo + (P.snowAlbedo - P.albedo) * min(1.0, a.z / P.snowAlbedoDepth);
-  let T = s + (P.lag * (rw2.x - P.lapse * st.y + P.sunHeat * (1.0 - alb) * light - P.radCool - s) + P.conduct / 8.0 * around - P.conduct * s) / cap(a.y);
-  oA[i] = vec4<f32>(a.x, a.y, a.z, T);
+  var gone = 0.0;
+  if (i < P.size) {
+    let r = i / P.n;
+    let c = i - r * P.n;
+    let a = sA[i];
+    let nm = stat[2u * i + 1u];
+    let tdeep = iceBuf[4u * i + 2u];
+    let ta = thIn[i] - P.gammaDry * nm.w;
+    let tg = a.w;
+    let ak = ta + 273.15;
+    let lit = lightIn[i];
+    let u = lit - lightIn[P.size + i];
+    var w = a.y;
+    var sn = a.z;
+    var ic = iceBuf[4u * i];
+    var pk = iceBuf[4u * i + 1u];
+    let covered = sn > 0.02 || ic > 0.02;
+    let cover = min(1.0, sn / P.snowAlbedoDepth);
+    let alb = P.albedo + (P.snowAlbedo - P.albedo) * cover;
+    let hb = P.hAir + (P.hSnow - P.hAir) * cover;
+    let gc = 1.0 / (P.rGround + sn * P.snowRes + ic * P.iceRes);
+    var sw = 0.0;
+    if (u > 0.0) { sw = ${PHYS.solar}.0 * exp(P.lnTrans / max(u, 0.08)) * (1.0 - alb) * lit; }
+    let clear = 1.0 - 0.261 * exp(-7.77e-4 * ta * ta);
+    let lwd = (clear + P.lwCloud * (1.0 - clear)) * ${PHYS.sigma} * ak * ak * ak * ak;
+    let e = 0.6108 * exp(17.27 * ta / (ta + 237.3));
+    let delta = 4098.0 * e / ((ta + 237.3) * (ta + 237.3));
+    let pt = P.ptAlpha * delta / (delta + ${PHYS.gamma});
+    var wet = 0.0;
+    if (!covered && w > 0.0) { wet = min(1.0, w / P.wetCrit); }
+    var ts = tg;
+    if (covered) { ts = min(ta, 0.0); }
+    var le = 0.0;
+    for (var k = 0; k < 4; k = k + 1) {
+      let tk = ts + 273.15;
+      let rn = sw + lwd - P.emis * ${PHYS.sigma} * tk * tk * tk * tk;
+      le = wet * pt * max(0.0, rn);
+      let h = hb * (1.0 + P.hUnstable * max(0.0, ts - ta));
+      let f = rn - h * (ts - ta) - le - gc * (ts - tg);
+      ts = ts + clamp(f / (4.0 * P.emis * ${PHYS.sigma} * tk * tk * tk + h + gc), -30.0, 30.0);
+    }
+    var q = gc * (ts - tg);
+    if (le > 0.0) {
+      let x = min(w, P.accel * le * P.dt / (${PHYS.lv}.0 * P.kg));
+      w = w - x;
+      gone = x;
+    }
+    if (sn > 0.02) {
+      if (ts > 0.0) {
+        pk = pk + P.accel * P.dt * (sw + lwd - P.emis * ${PHYS.sigma} * 273.15 * 273.15 * 273.15 * 273.15 + hb * ta) + P.dt * gc * tg;
+        ts = 0.0;
+        q = -gc * tg;
+      } else {
+        pk = max(pk - P.accel * P.dt * P.gTop * (0.0 - ts), -P.coldK * 2100.0 * P.kg * sn);
+      }
+      let over = pk - P.snowRetain * sn * ${PHYS.lf}.0 * P.kg;
+      if (over > 0.0) {
+        let ms = min(sn, over / (${PHYS.lf}.0 * P.kg));
+        sn = sn - ms;
+        w = w + ms;
+        pk = pk - ms * ${PHYS.lf}.0 * P.kg;
+      }
+      if (sn <= 0.0) { pk = 0.0; }
+    } else if (ic > 0.02 && ts > 0.0) {
+      let m = P.accel * P.dt * (sw + lwd - P.emis * ${PHYS.sigma} * 273.15 * 273.15 * 273.15 * 273.15 + hb * ta) + P.dt * gc * tg;
+      if (m > 0.0) { ic = ic - min(ic, m / (${PHYS.lf}.0 * P.kg)); }
+      ts = 0.0;
+      q = -gc * tg;
+    } else { pk = 0.0; }
+    var tn = 0.0;
+    if (ic > 0.0) {
+      let fw = q + P.gLake * tdeep;
+      let d = max(-ic, min(w - ic, -P.accel * P.dt * fw / (${PHYS.lf}.0 * P.kg)));
+      ic = ic + d;
+    } else {
+      let cap = heatCap(w);
+      var gd = P.gDeep;
+      if (w > P.iceMin) { gd = P.gLake; }
+      tn = tg + P.dt * (q + gd * (tdeep - tg)) / cap;
+      if (w > P.iceMin && tn < 0.0) {
+        ic = min(w, cap * (0.0 - tn) / (${PHYS.lf}.0 * P.kg));
+        tn = 0.0;
+      }
+    }
+    iceBuf[4u * i] = ic;
+    iceBuf[4u * i + 1u] = pk;
+    iceBuf[4u * i + 2u] = tdeep + (tn - tdeep) * P.deepK;
+    // the air: what was upwind a step ago (the free atmosphere, from outside the map), warmed by the surface through the boundary layer, and mixed with the free atmosphere above (see Land.warmGround)
+    let hh = hb * (1.0 + P.hUnstable * max(0.0, ts - ta));
+    let heat = hh * (ts - ta);
+    let hbl = min(P.hblMax, P.hblMin + P.kBL * max(0.0, heat));
+    let thf = thFreeAt(i, hbl / 2000.0);
+    let dev = max(0.0, thf - thIn[i]);
+    let tilt = length(vec2<f32>(nm.x, nm.y));
+    var dC = 0.0;
+    var dR = 0.0;
+    if (dev > 0.0 && tilt > 1e-9) {
+      let v = min(P.drainMax, P.drain * sqrt(9.81 * dev / 270.0 * hbl * (tilt / nm.z)));
+      let k = v * P.dtDx;
+      dC = k * nm.x / tilt;
+      dR = k * nm.y / tilt;
+    }
+    let fc = f32(c) - (P.windC + dC);
+    let fr = f32(r) + (P.windR + dR);
+    let nf = f32(P.n - 1u);
+    var upw = 0.0;
+    if (fc < 0.0 || fc > nf || fr < 0.0 || fr > nf) {
+      let cc = u32(clamp(round(fc), 0.0, nf));
+      let rr = u32(clamp(round(fr), 0.0, nf));
+      upw = thFreeAt(rr * P.n + cc, 0.0);
+    } else {
+      let c0 = u32(floor(fc));
+      let r0 = u32(floor(fr));
+      let c1 = min(c0 + 1u, P.n - 1u);
+      let r1 = min(r0 + 1u, P.n - 1u);
+      let tc = fc - floor(fc);
+      let tr = fr - floor(fr);
+      upw = (thIn[r0 * P.n + c0] * (1.0 - tc) + thIn[r0 * P.n + c1] * tc) * (1.0 - tr) + (thIn[r1 * P.n + c0] * (1.0 - tc) + thIn[r1 * P.n + c1] * tc) * tr;
+    }
+    var thn = upw + P.dt * heat / (P.rhoCp * hbl);
+    var mk = P.mixStable;
+    if (heat > 0.0) { mk = P.mixConv; }
+    thn = thn + (thf - thn) * mk;
+    thOut[i] = thn;
+    oA[i] = vec4<f32>(a.x, w, sn, tn);
+  }
+  let te = wgSum(t, gone);
+  if (t == 0u) { acc[wg.x * 8u] = acc[wg.x * 8u] + te; }
 }`;
 
-// rain or snow, snowmelt, nitrogen in the rain, evaporation, soaking away
+// rain or snow, nitrogen in the rain, soaking away (snowmelt and evaporation are in the ground's energy balance)
 const WEATHER = /* wgsl */ `
 @group(0) @binding(2) var<storage, read_write> sA: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> sB: array<f32>;
 @group(0) @binding(4) var<storage, read> stat: array<vec4<f32>>;
 @group(0) @binding(5) var<storage, read_write> acc: array<f32>;
 @group(0) @binding(6) var<storage, read> lightIn: array<f32>;
+@group(0) @binding(7) var<storage, read> thBuf: array<f32>;
 ${MAIN} {
   let i = g.x;
-  var evapped = 0.0;
   var seeped = 0.0;
   if (i < P.size) {
     let r = i / P.n;
@@ -197,23 +316,12 @@ ${MAIN} {
     var w = a.y;
     var sn = a.z;
     var nn = sB[i];
-    let air = rw2.x - P.lapse * st.y;
+    let air = thBuf[i] - P.gammaDry * nm.w;
     if (P.raining > 0.5) {
       let d = P.rainD * rw2.y * max(0.1, 1.0 + P.kOro * st.y);
       if (air < 1.0) { sn = sn + d; } else { w = w + d; }
     }
-    if (sn > 0.0 && a.w > 0.0) {
-      let m = min(sn, P.meltRate * a.w);
-      sn = sn - m;
-      w = w + m;
-    }
     nn = nn + P.deposit;
-    let light = lightIn[i];
-    let e = P.evap * (0.25 + 0.75 * light);
-    let warm = 0.6 + 0.4 * min(1.5, max(0.0, air / 15.0));
-    let x = min(w, e * warm);
-    w = w - x;
-    evapped = x;
     let y = min(min(min(w, P.soakMax) * P.seep + P.floodSeep * max(0.0, w - 1.5), P.seepMax), w);
     w = w - y;
     seeped = y;
@@ -222,9 +330,8 @@ ${MAIN} {
     sA[i] = a;
     sB[i] = nn;
   }
-  let te = wgSum(t, evapped);
   let ts = wgSum(t, seeped);
-  if (t == 0u) { acc[wg.x * 8u] = acc[wg.x * 8u] + te; acc[wg.x * 8u + 1u] = acc[wg.x * 8u + 1u] + ts; }
+  if (t == 0u) { acc[wg.x * 8u + 1u] = acc[wg.x * 8u + 1u] + ts; }
 }`;
 
 // water runs to lower neighbours: first how much leaves each cell in each of eight directions (the drop in water surface, in units of water, times a share, and never more than
@@ -832,8 +939,8 @@ class Gpu {
     this.pass = {
       apply: await make('apply', PRELUDE + APPLY, { ...U2, 2: 'w', 3: 'w', 4: 'r' }),
       light: await make('light', PRELUDE + LIGHT, { ...U2, 2: 'r', 3: 'w' }),
-      soil: await make('soil', PRELUDE + SOIL, { ...U2, 2: 'r', 3: 'w', 4: 'r', 5: 'r' }),
-      weather: await make('weather', PRELUDE + WEATHER, { ...U2, 2: 'w', 3: 'w', 4: 'r', 5: 'w', 6: 'r' }),
+      soil: await make('soil', PRELUDE + SOIL, { ...U2, 2: 'r', 3: 'w', 4: 'r', 5: 'r', 6: 'w', 7: 'w', 8: 'r', 9: 'w' }),
+      weather: await make('weather', PRELUDE + WEATHER, { ...U2, 2: 'w', 3: 'w', 4: 'r', 5: 'w', 6: 'r', 7: 'r' }),
       flux: await make('flux', PRELUDE + FLUX, { ...U2, 2: 'r', 3: 'w', 4: 'w', 5: 'r' }),
       gather: await make('gather', PRELUDE + GATHER, { ...U2, 2: 'r', 3: 'r', 4: 'w', 5: 'w', 6: 'r', 7: 'r' }),
       creep: await make('creep', PRELUDE + CREEP, { ...U2, 2: 'r', 3: 'r', 4: 'w', 5: 'w', 6: 'r', 7: 'w' }),
@@ -876,6 +983,9 @@ class GpuSim {
     this.pa = 0; this.pb = 0;
     this.stat = buf(size * 32, STORE, 'stat');
     this.lightBuf = buf(size * 8, STORE, 'light');
+    this.iceBuf = buf(size * 16, STORE, 'extra');   // per cell: the ice on the water (a depth of water; it only insulates), the heat a snowpack holds, and the temperature of the deep ground, kept on the card
+    this.theta = [buf(size * 4, STORE, 'air0'), buf(size * 4, STORE, 'air1')]; this.pt = 0;   // the air's potential temperature, twice (what was there, what is now)
+    this.readT = buf(size * 4, MAP_READ, 'readAir');
     this.dlBuf = buf(size * 16, STORE, 'deltas');
     this.fluxA = buf(size * 16, STORE, 'fluxA');
     this.fluxB = buf(size * 16, STORE, 'fluxB');
@@ -894,7 +1004,7 @@ class GpuSim {
     const st = new Float32Array(size * 8);
     for (let i = 0; i < size; i++) {
       st[8 * i] = L.elev[i]; st[8 * i + 1] = L.hKm[i]; st[8 * i + 2] = L.outlet[i]; st[8 * i + 3] = L.skyH ? L.skyH[i] : 0;
-      st[8 * i + 4] = L.nE[i]; st[8 * i + 5] = L.nN[i]; st[8 * i + 6] = L.nU[i];
+      st[8 * i + 4] = L.nE[i]; st[8 * i + 5] = L.nN[i]; st[8 * i + 6] = L.nU[i]; st[8 * i + 7] = L.zKm[i];
     }
     d.queue.writeBuffer(this.stat, 0, st);
     this.fresh = true;   // the first step sends the starting ground up
@@ -984,17 +1094,20 @@ class GpuSim {
       const A = new Float32Array(size * 4), B = new Float32Array(size);
       for (let i = 0; i < size; i++) { A[4 * i] = L.grass[i]; A[4 * i + 1] = L.water[i]; A[4 * i + 2] = L.snow[i]; A[4 * i + 3] = L.soil[i]; B[i] = L.nitrogen[i]; }
       q.writeBuffer(this.A[0], 0, A); q.writeBuffer(this.B[0], 0, B);
+      const th = Float32Array.from(L.theta), ex = new Float32Array(size * 4); for (let i = 0; i < size; i++) ex[4 * i + 2] = L.tDeep[i];
+      q.writeBuffer(this.theta[this.pt], 0, th); q.writeBuffer(this.iceBuf, 0, ex);
       this.fresh = false;
     }
 
     // parameters and the row table
-    const pd = this.paramData, vals = { n, size, raining: L.raining ? 1 : 0, rainD: L.rainDepth * w.clim.wet, lag: L.soilLag, conduct: L.soilConduct, heatGain: L.heatGain, lapse: w.clim.lapse, kOro: w.clim.kOro, sunHeat: L.sunHeat, radCool: L.radCool, albedo: L.albedo, snowAlbedo: L.snowAlbedo, snowAlbedoDepth: L.snowAlbedoDepth, invWs: L.invWs, retain: L.retain, flowMin: L.flowMin, soakMax: Math.min(L.soakMax, 1e30), floodStart: L.floodStart, floodEnd: L.floodEnd, nMobile: L.nMobile, waterHeat: L.waterHeat, waterHeatMax: L.waterHeatMax, meltRate: L.meltRate, deposit: L.deposit, evap: L.evap, seep: L.seep, floodSeep: L.floodSeep, seepMax: L.seepMax, flow: L.flow, creep: L.creep, leach: L.leach, outletRate: L.outletRate, regrow: L.regrow, gMax: L.gMax, waterPer: L.waterPer, nPer: L.nPer, shadows: L.skyH ? 1 : 0, cellRun: L.run, skyMax: L.skyMax ?? 0 };
+    const dx = L.cellMetres ?? L.run * (L.metresPerUnit || 1);
+    const pd = this.paramData, vals = { n, size, raining: L.raining ? 1 : 0, rainD: L.rainDepth * w.clim.wet, heatGain: L.heatGain, gammaDry: L.gammaDry, freeLapse: w.clim.freeLapse, windC: (L.windFactor * w.clim.w700E * w.clim.dt) / dx, windR: (L.windFactor * w.clim.w700N * w.clim.dt) / dx, dtDx: w.clim.dt / dx, hblMin: L.hblMin, hblMax: L.hblMax, kBL: L.kBL, drain: L.drain, drainMax: L.drainMax, mixConv: 1 - Math.exp(-w.clim.dt / L.tauConv), mixStable: 1 - Math.exp(-w.clim.dt / L.tauStable), rhoCp: PHYS.rhoAir * PHYS.cpAir, deepK: 1 - Math.exp((-w.clim.accel * w.clim.dt) / L.tauDeep), kOro: w.clim.kOro, albedo: L.albedo, snowAlbedo: L.snowAlbedo, snowAlbedoDepth: L.snowAlbedoDepth, invWs: L.invWs, retain: L.retain, flowMin: L.flowMin, soakMax: Math.min(L.soakMax, 1e30), floodStart: L.floodStart, floodEnd: L.floodEnd, nMobile: L.nMobile, waterHeatMax: L.waterHeatMax, cDry: L.cDry, cWaterU: (PHYS.cWater * L.waterMm) / 1000, kg: L.waterMm, hUnstable: L.hUnstable, rGround: L.dGround / L.kGround, snowRes: L.waterMm / L.rhoSnow / L.kSnow, iceRes: L.waterMm / L.rhoIce / L.kIce, gDeep: L.gDeep, gLake: L.gLake, iceMin: L.iceMin, snowRetain: L.snowRetain, gTop: L.gTop, coldK: L.coldK, lnTrans: Math.log(L.trans), lwCloud: L.lwCloud, emis: L.emis, hAir: L.hAir, hSnow: L.hSnow, ptAlpha: L.ptAlpha, wetCrit: L.wetCrit, dt: w.clim.dt, accel: w.clim.accel, deposit: L.deposit, seep: L.seep, floodSeep: L.floodSeep, seepMax: L.seepMax, flow: L.flow, creep: L.creep, leach: L.leach, outletRate: L.outletRate, regrow: L.regrow, gMax: L.gMax, waterPer: L.waterPer, nPer: L.nPer, shadows: L.skyH ? 1 : 0, cellRun: L.run, skyMax: L.skyMax ?? 0 };
     LAND_FIELDS.forEach(([k, t], i) => (t === 'u32' ? pd.setUint32(i * 4, vals[k], true) : pd.setFloat32(i * 4, vals[k], true)));
     q.writeBuffer(this.P, 0, pd);
     const rd = this.rowData, c = w.clim;
     for (let r = 0; r < n; r++) {
       const o = r * 8;
-      rd[o] = c.up[r]; rd[o + 1] = c.east[r]; rd[o + 2] = c.north[r]; rd[o + 3] = c.sun[r]; rd[o + 4] = c.temp[r]; rd[o + 5] = c.rain[r]; rd[o + 6] = c.sinLat[r]; rd[o + 7] = c.cosLat[r];
+      rd[o] = c.up[r]; rd[o + 1] = c.east[r]; rd[o + 2] = c.north[r]; rd[o + 3] = c.sun[r]; rd[o + 4] = c.free[r]; rd[o + 5] = c.rain[r]; rd[o + 6] = c.sinLat[r]; rd[o + 7] = c.cosLat[r];
     }
     for (let k = 0; k < n; k++) { const o = 8 * n + 4 * k; rd[o] = L.colA[k]; rd[o + 1] = L.colB[k]; rd[o + 2] = c.sd; rd[o + 3] = 0; }
     q.writeBuffer(this.rows, 0, rd, 0, n * 12);
@@ -1086,8 +1199,8 @@ class GpuSim {
     const base = [this.P, this.rows];
     go(P.apply, ...base, A(), B(), this.dlBuf);
     go(P.light, ...base, this.stat, this.lightBuf);
-    go(P.soil, ...base, A(), this.A[1 - this.pa], this.stat, this.lightBuf); this.pa ^= 1;
-    go(P.weather, ...base, A(), B(), this.stat, this.acc, this.lightBuf);
+    go(P.soil, ...base, A(), this.A[1 - this.pa], this.stat, this.lightBuf, this.acc, this.iceBuf, this.theta[this.pt], this.theta[1 - this.pt]); this.pa ^= 1; this.pt ^= 1;
+    go(P.weather, ...base, A(), B(), this.stat, this.acc, this.lightBuf, this.theta[this.pt]);
     for (let s = 0; s < L.flowSteps; s++) {
       go(P.flux, ...base, A(), this.fluxA, this.fluxB, this.stat);
       go(P.gather, ...base, A(), B(), this.A[1 - this.pa], this.B[1 - this.pb], this.fluxA, this.fluxB); this.pa ^= 1; this.pb ^= 1;
@@ -1108,15 +1221,17 @@ class GpuSim {
       enc.copyBufferToBuffer(this.res, 0, this.readRes, 0, count * 4);
     }
     enc.copyBufferToBuffer(A(), 0, this.readA, 0, size * 16);
+    enc.copyBufferToBuffer(this.theta[this.pt], 0, this.readT, 0, size * 4);
     q.submit([enc.finish()]);
     const t1 = performance.now();
 
-    await Promise.all([this.readA.mapAsync(1), count ? this.readRes.mapAsync(1, 0, count * 4) : null]);
+    await Promise.all([this.readA.mapAsync(1), this.readT.mapAsync(1), count ? this.readRes.mapAsync(1, 0, count * 4) : null]);
     const tWait = performance.now();
     const fa = new Float32Array(this.readA.getMappedRange());
     const G = L.grass, Wt = L.water, S = L.snow, T = L.soil;
     for (let i = 0, j = 0; i < size; i++, j += 4) { G[i] = fa[j]; Wt[i] = fa[j + 1]; S[i] = fa[j + 2]; T[i] = fa[j + 3]; }
     this.readA.unmap();
+    { const th = new Float32Array(this.readT.getMappedRange()), TH = L.theta, AIR = L.air, Z = L.zKm, gd = L.gammaDry; for (let i = 0; i < size; i++) { TH[i] = th[i]; AIR[i] = th[i] - gd * Z[i]; } this.readT.unmap(); L.temp = AIR[((this.n >> 1) * this.n) + (this.n >> 1)]; }
     let out = new Uint32Array(0);
     if (count) { out = new Uint32Array(this.readRes.getMappedRange(0, count * 4)).slice(); this.readRes.unmap(); }
     this.last = { prep: tPrep - t0, upload: tUp - tPrep, encode: t1 - tUp, wait: tWait - t1, readback: performance.now() - tWait, born: nBorn };
@@ -1153,7 +1268,7 @@ class GpuSim {
   pendingNitrogen() { let s = 0; for (const i of this.touched) s += this.dl[4 * i + 1]; return s; }   // (what the animals dropped since the last step went up)
 
   destroy() {
-    for (const b of [...this.A, ...this.B, this.stat, this.lightBuf, this.dlBuf, this.fluxA, this.fluxB, this.acc, this.P, this.rows, this.readA, this.readB, this.readAcc, this.wts, this.an, this.res, this.readRes, this.BP, this.CP, this.DP, this.tIdx, this.tVal, this.cell, this.prog, this.bornBuf]) b?.destroy();
+    for (const b of [...this.A, ...this.B, this.stat, this.lightBuf, this.iceBuf, ...this.theta, this.readT, this.dlBuf, this.fluxA, this.fluxB, this.acc, this.P, this.rows, this.readA, this.readB, this.readAcc, this.wts, this.an, this.res, this.readRes, this.BP, this.CP, this.DP, this.tIdx, this.tVal, this.cell, this.prog, this.bornBuf]) b?.destroy();
     this.L.dev = null;
   }
 }

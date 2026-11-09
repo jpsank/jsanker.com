@@ -435,6 +435,7 @@ export class World {
     this.bodyN = opts.bodyN ?? 0.5;       // nitrogen in a newly released animal's body
     this.excrete = opts.excrete ?? 0.01;  // share of its body nitrogen an animal passes on each step
     this.land = new Land({ seed: opts.seed ?? 1, size: this.n, terrain, lakes: terrain ? (opts.lakes === false ? null : opts.lakes ?? LAKES) : null, ...(opts.land || {}) });
+    this.land.setDeep(this.latTop, this.latBottom);
     this.swimDepth = opts.swimDepth ?? (terrain ? 1000 / this.land.waterMm : 3);   // that deep (a metre on the real map): feet leave the bottom
     this.gpu = opts.gpu ? opts.gpu.attach(this) : null;   // the ground and the brains run on the graphics card when there is one (see gpu.js)
     this.t = 0;
@@ -480,7 +481,7 @@ export class World {
   climate() {
     this.clim = climateRows(this.t, this.n, this.dayLength, this.yearDays, this.rainSwing, this.latTop, this.latBottom);   // row by row, north to south
     const mid = (this.n - 1) >> 1;   // the middle of the map is 45 degrees north, for the clock
-    this.sun = this.clim.sun[mid]; this.temp = this.clim.temp[mid];
+    this.sun = this.clim.sun[mid]; this.temp = this.land?.temp ?? this.clim.free[mid];   // (the air at the middle of the map, once the ground has worked it out)
   }
 
   /** For display: { year, day (of the year), hour (0-24), season (by calendar month: spring is March to May) } */

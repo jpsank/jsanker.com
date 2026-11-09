@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Yellowstone: CPU against GPU</title>
+<style>body { font: 14px/1.4 ui-monospace, monospace; margin: 1.5rem; } .ok { color: #1a7f37; } .FAIL { color: #cf222e; font-weight: bold; } td, th { padding: 2px 12px 2px 0; text-align: left; }</style>
+<h3>Yellowstone: the ground on the CPU against the ground on the graphics card</h3>
+<p>Runs the same world on both for <input id="steps" type="number" value="1500" style="width:5em"> steps (1,800 is a year; 1,500 reaches mid-March, with snow and lake ice) from seed <input id="seed" type="number" value="1" style="width:3em"> <button id="go">Run</button> <span id="state"></span></p>
+<table id="out"></table>
+<pre id="log"></pre>
+<script type="module">
+import { createGpu } from '/yellowstone/gpu.js';
+import { World } from '/yellowstone/sim.js';
+// The two cannot agree to the last digit (the card works in 32-bit numbers, the CPU in 64-bit, and melting and freezing are thresholds), so what is checked is how close the whole map stays:
+// the average difference between cells, and how many cells are further apart than a tolerance.
+const CHECKS = [
+  // field, unit, mean |difference| allowed, share of the map allowed to be further apart than `far`, far (about 2 to 10 times what a healthy run shows; snow and ice are set by melting and freezing thresholds, which the card's 32-bit numbers can tip a few cells either way)
+  ['grass', 'grass', 5e-4, 0.005, 1e-2], ['water', 'water', 5e-4, 0.01, 1e-2], ['snow', 'snow', 1e-4, 0.002, 1e-2], ['soil', 'K', 1e-3, 0.001, 0.1], ['nitrogen', 'N', 5e-5, 0.001, 1e-2], ['ice', 'ice', 2e-5, 0.001, 1e-2], ['air', 'K', 1e-3, 0.001, 0.1], ['deep', 'K', 1e-3, 0.001, 0.1],
+];
+const LEDGER_MAX = 1e-5;   // the card's water books may be off by this share of all the water
+const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
+async function run() {
+  const steps = +document.getElementById('steps').value, seed = +document.getElementById('seed').value, state = document.getElementById('state');
+  document.getElementById('out').innerHTML = ''; document.getElementById('log').textContent = '';
+  const gpu = await createGpu(); if (!gpu) { state.textContent = 'no WebGPU here'; document.title = 'FAIL: no WebGPU'; return; }
+  const cpu = new World({ seed, prey: 0 }), gw = new World({ seed, prey: 0, gpu });
+  for (let s = 1; s <= steps; s++) { cpu.step(); await gw.advance(); if (s % 100 === 0) state.textContent = `step ${s} of ${steps}`; }
+  await gw.gpu.sync();
+  const Lc = cpu.land, Lg = gw.land, N = Lc.n * Lc.n, g = gw.gpu, d = g.d;
+  const rb = d.createBuffer({ size: N * 16, usage: 0x1 | 0x8 }), enc = d.createCommandEncoder(); enc.copyBufferToBuffer(g.iceBuf, 0, rb, 0, N * 16); d.queue.submit([enc.finish()]);
+  await rb.mapAsync(1); const ice = new Float32Array(rb.getMappedRange().slice(0)); rb.unmap(); rb.destroy();
+  const gIce = Float64Array.from({ length: N }, (_, i) => ice[4 * i]), gDeep = Float64Array.from({ length: N }, (_, i) => ice[4 * i + 2]);
+  const rows = []; let fail = 0;
+  for (const [f, unit, meanMax, farMax, far] of CHECKS) {
+    const a = f === 'ice' ? Lc.ice : f === 'deep' ? Lc.tDeep : Lc[f], b = f === 'ice' ? gIce : f === 'deep' ? gDeep : Lg[f];
+    let sum = 0, mx = 0, nfar = 0; for (let i = 0; i < N; i++) { const x = Math.abs(a[i] - b[i]); sum += x; if (x > mx) mx = x; if (x > far) nfar++; }
+    const mean = sum / N, share = nfar / N, ok = mean <= meanMax && share <= farMax; if (!ok) fail++;
+    rows.push([ok ? 'ok' : 'FAIL', f, `mean |difference| ${mean.toExponential(1)} (allowed ${meanMax.toExponential(0)})`, `largest ${mx.toExponential(1)}`, `${nfar} cells further apart than ${far} (${(100 * share).toFixed(2)}% of the map, allowed ${(100 * farMax).toFixed(2)}%)`]);
+  }
+  const ac = Lc.audit(0), ag = Lg.audit(0), cr = Math.abs(ac.waterError) / ac.water, gr = Math.abs(ag.waterError) / ag.water;
+  rows.push([cr <= 1e-9 ? 'ok' : 'FAIL', 'CPU water books', `error ${cr.toExponential(1)} of all the water`, '', 'allowed 1e-9']); if (cr > 1e-9) fail++;
+  rows.push([gr <= LEDGER_MAX ? 'ok' : 'FAIL', 'GPU water books', `error ${gr.toExponential(1)} of all the water`, '', `allowed ${LEDGER_MAX.toExponential(0)}`]); if (gr > LEDGER_MAX) fail++;
+  const tb = document.getElementById('out'); for (const r of rows) { const tr = tb.insertRow(); r.forEach((c, k) => { const td = tr.insertCell(); td.textContent = c; if (k === 0) td.className = c; }); }
+  window.RESULT = { steps, seed, fail, rows }; state.textContent = fail ? `${fail} checks failed` : 'all checks passed'; document.title = (fail ? 'FAIL' : 'PASS') + ': Yellowstone CPU against GPU'; gw.dispose();
+}
+document.getElementById('go').onclick = run;
+if (new URLSearchParams(location.search).has('run')) run();
+</script>

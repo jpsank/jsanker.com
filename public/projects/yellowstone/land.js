@@ -1,7 +1,7 @@
 // The ground: height, water, snow, nitrogen, grass and ground temperature on every cell of a map with walls on all four sides (real elevation data, see terrain.js).
 //
 // Precipitation falls evenly, more in wetter months, as rain, or as snow where it is cold (higher ground is colder, so it snows there
-// first and stays longest). Snow piles up and melts at a rate that grows with how far the air is above freezing; the meltwater
+// first and stays longest). Snow piles up and melts when the sun and the warm air give it the heat to; the meltwater
 // joins the rest. Water runs downhill (it fills in the low ground, so what
 // flows is the difference in water *surface*, elevation plus depth), carrying dissolved nitrogen with it, and leaves by
 // evaporation and by being drunk by plants. Nitrogen also creeps from cell to cell on its own. Every amount that enters or
@@ -11,8 +11,9 @@
 // (the plant holds it until it dies back, or is eaten); an animal standing on a cell shades it, so nothing grows there; and
 // grass does not grow when the cell is flooded, dried out or frozen.
 //
-// The ground temperature follows the air above it (colder up the hill, warmer in sun-facing slopes) and conducts to the cells around it; it melts the snow,
-// slows the grass and is warmed by the animals standing on it.
+// The ground has a temperature of its own on every cell, from an energy balance: it is warmed by the sun it absorbs and by the heat the sky sends down, and cooled by the heat it radiates,
+// the heat it gives the air above it and the heat that evaporates water. The heat that melts snow comes from the same balance. The air's temperature (colder up the hill) is the
+// regional climate, given. The ground's temperature slows the grass and is warmed by the animals standing on it.
 //
 // This file is the CPU version, and the reference. With WebGPU gpu.js runs the same passes as compute shaders (and the animals' effects on the ground
 // are collected here as deltas, see `delta`). This file has no DOM in it.
@@ -24,6 +25,43 @@ import { makeRng } from './sim.js';
 const MONTH_RAIN = [36, 33, 38, 51, 66, 56, 30, 27, 35, 40, 35, 38];
 const MONTH_MID = [15.5, 45, 74.5, 105, 135.5, 166, 196.5, 227.5, 258, 288.5, 319, 349.5];   // middle day of each month
 const RAIN_MEAN = MONTH_RAIN.reduce((x, y) => x + y, 0) / 12;
+
+/** The physical constants of the ground's energy balance (SI units: watts per square metre, joules, kilograms, kelvin). */
+/** What comes from outside the map: the free atmosphere above it, as measured by weather balloons at Riverton, Wyoming (43.06 N) and Great Falls, Montana (47.46 N), averaged over 1991-2020
+ *  (NOAA's Integrated Global Radiosonde Archive, https://www.ncei.noaa.gov/products/weather-balloon/integrated-global-radiosonde-archive; scripts/yellowstone/reduce-igra.mjs makes this table).
+ *  For each month: the temperature at the 700 hPa level (about 3 km up) at Riverton and at Great Falls (C), the height of that level (km), how fast the air cools with height between 850 and 700 hPa
+ *  at Great Falls (K per km), and the wind at that level, blowing toward the east and the north (m/s). */
+const FREE_AIR = { latR: 43.06, latG: 47.46, months: [
+  [-6.2, -9.0, 2.996, 4.62, 9.8, -3.5],
+  [-7.5, -10.2, 2.984, 5.32, 8.4, -2.5],
+  [-4.6, -8.2, 3.001, 6.29, 7.8, -1.1],
+  [-2.3, -6.0, 3.017, 7.24, 5.4, -0.7],
+  [2.3, -1.7, 3.057, 7.42, 4.3, -0.1],
+  [8.2, 2.6, 3.092, 7.44, 5.3, 1.2],
+  [13.1, 6.8, 3.147, 7.73, 5.1, 1.0],
+  [12.1, 7.2, 3.142, 7.61, 4.9, 1.1],
+  [7.5, 3.2, 3.109, 7.02, 5.9, 0.3],
+  [1.4, -2.5, 3.061, 6.47, 7.6, -1.3],
+  [-3.0, -6.7, 3.022, 5.67, 9.2, -2.0],
+  [-6.8, -9.4, 2.992, 5.05, 9.4, -2.9],
+] };
+const MID_DOY = [15.5, 45, 74.5, 105, 135.5, 166, 196.5, 227.5, 258, 288.5, 319, 349.5];
+/** The free atmosphere's numbers on a day of the year: the monthly means joined by straight lines, round the year. */
+function freeAirAt(doy) {
+  let k = 11; for (let m = 0; m < 12; m++) if (doy < MID_DOY[m]) { k = m - 1; break; }
+  const a = (k + 12) % 12, b = (k + 1) % 12, span = (MID_DOY[b] - MID_DOY[a] + 365) % 365 || 365, f = ((doy - MID_DOY[a] + 365) % 365) / span;
+  return FREE_AIR.months[a].map((v, j) => v + (FREE_AIR.months[b][j] - v) * f);
+}
+
+export const PHYS = {
+  solar: 1361,        // sunlight at the top of the air, W/m2
+  sigma: 5.670374e-8, // Stefan-Boltzmann constant, W/m2/K4
+  lv: 2.5e6,          // J to evaporate a kg of water
+  lf: 3.34e5,         // J to melt a kg of ice
+  rhoAir: 1.2, cpAir: 1005,   // kg/m3 and J/kg/K of air near the ground
+  gamma: 0.066,       // psychrometric constant, kPa/K
+  cWater: 4.18e6,     // J/m3/K of liquid water
+};
 
 /** The colours of the land view, which the animals see too: bare ground shaded by height and by how the sun falls on the slope, with grass, water and snow mixed over it.
  *  `landRgb` writes the red, green and blue (0-255) of a cell with the given height, slope light (the sunlight on it minus what flat ground there gets), grass, water and snow into `out`. */
@@ -93,17 +131,14 @@ export function climateRows(t, n, dayLength = 60, yearDays = 30, rainSwing = 1, 
   const doy = dayOfYear(t, dayLength, yearDays);   // day 1 is 1 January, so the start (21 June) is day 172
   const hour = day + (equationOfTime(doy) * 2 * Math.PI) / 1440;   // the sundial's hour angle: ahead of the clock when the equation of time is positive
   const ch = Math.cos(hour), sh = Math.sin(hour);
-  const tday = 4 * Math.cos(day - 0.6);
   const decl = declination(doy), sd = Math.sin(decl), cd = Math.cos(decl);
   const f = 1 + rainSwing * (rainFactor(dayOfYear(t, dayLength, yearDays)) - 1);
-  const sun = new Float64Array(n), temp = new Float64Array(n), rain = new Float64Array(n), sinLat = new Float64Array(n), cosLat = new Float64Array(n);
+  const sun = new Float64Array(n), free = new Float64Array(n), rain = new Float64Array(n), sinLat = new Float64Array(n), cosLat = new Float64Array(n);
   const east = new Float64Array(n), north = new Float64Array(n), up = new Float64Array(n);
-  // The regional climate, fitted to the PRISM normals over the map: at the map's average height the air averages 5.1 C and swings 11.9 C either way
-  // through the year, warmest around 21 July. Going north it is colder by about 0.85 C a degree in summer and about nothing in winter. The air cools
-  // with height by about 6 C a km in summer but less (2 to 3) in winter, when cold air pools in the valleys.
+  // What comes from outside the map: the free atmosphere (see FREE_AIR). Its temperature at height z (km above sea level) on row r is `fa[r] - freeLapse * z`; it has no day and night: the air near the ground
+  // gets those, and its own temperature, from the ground and the wind (see `Land.warmGround`).
   const N = doy, mid = (top + bottom) / 2, w = (2 * Math.PI * N) / 365;
-  const tRef = 5.1 + 11.9 * Math.cos(w - (2 * Math.PI * 202) / 365), tLat = -0.4 - 0.45 * Math.cos(w - (2 * Math.PI * 200) / 365);
-  const lapse = 4.6 + 1.6 * Math.cos(w - (2 * Math.PI * 170) / 365);
+  const [tR, tG, z700, freeLapse, w700E, w700N] = freeAirAt(doy);
   // How much more precipitation falls the higher the ground: about 110% of the average for each km in winter, 35% in summer (the westerlies are stronger in winter),
   // and how much of it falls in the north rather than the south (more in the north, most of all in early summer)
   const kOro = ORO.mean + ORO.amp * Math.cos(w - (2 * Math.PI * 15) / 365), north2south = 0.9 + 0.45 * Math.cos(w - (2 * Math.PI * 190) / 365);
@@ -114,17 +149,17 @@ export function climateRows(t, n, dayLength = 60, yearDays = 30, rainSwing = 1, 
     east[r] = -cd * sh;
     north[r] = sd * cp - cd * sp * ch;
     sun[r] = Math.max(0, up[r]);
-    temp[r] = tRef + tLat * (lat - mid) + tday;
+    free[r] = tR + ((lat - FREE_AIR.latR) * (tG - tR)) / (FREE_AIR.latG - FREE_AIR.latR) + freeLapse * z700;   // (the temperature the free atmosphere would have at sea level, on its way down)
     rain[r] = Math.max(0.05, 1 + (north2south * (lat - mid)) / (top - bottom));
   }
-  return { sun, east, north, up, temp, rain, lapse, kOro, wet: Math.sqrt(Math.max(0, f)), season, sd, cd, ch, sh, sinLat, cosLat };
+  return { sun, east, north, up, free, freeLapse, w700E, w700N, rain, kOro, wet: Math.sqrt(Math.max(0, f)), season, sd, cd, ch, sh, sinLat, cosLat, dt: 86400 / dayLength, accel: 365 / yearDays };   // (`dt` is the seconds of the day a step stands for, and `accel` how many real days of the season go by in each model day)
 }
 
 export class Land {
   /**
    * opts: seed, size (100), relief (6: the tallest ground is this much above the lowest, in the same units as water depth),
    *       rainChance (0.1: chance per step of a shower in an average season), rainDepth (0.075: depth of an average shower),
-   *       evap (0.008: water lost per step from a bare cell at noon in summer), lapse (1.2: degrees colder per unit of height), meltRate (0.016: snow melted per degree above freezing per step), outletShare (0.03: the lowest ground that drains away as a river) and outletRate (0.3 of its water per step), seep (0.01: share of the surface water that soaks below the roots per step, plus floodSeep = 0.05 of any water deeper than 1.5, at most seepMax = 0.08 a cell), flow (0.2: share of a height difference that runs off per step),
+   *       lapse (1.2: degrees colder per unit of height), outletShare (0.03: the lowest ground that drains away as a river) and outletRate (0.3 of its water per step), seep (0.01: share of the surface water that soaks below the roots per step, plus floodSeep = 0.05 of any water deeper than 1.5, at most seepMax = 0.08 a cell), flow (0.2: share of a height difference that runs off per step),
    *       grass (1: starting amount on every cell), gMax (10: the most a cell can hold), regrow (0.04: growth rate per step at full light, moisture and nitrogen),
    *       waterPer (0.3: water used per unit grown), nPer (0.02: nitrogen held per unit of grass),
    *       creep (0.02: share of a cell's nitrogen that spreads to its neighbours per step), leach (0.0005), deposit (0.00005: nitrogen in the rain)
@@ -137,9 +172,7 @@ export class Land {
     this.pitDepth = opts.pitDepth ?? 1.2;  // pits shallower than this are filled in; deeper ones stay as lakes
     this.rainChance = opts.rainChance ?? 0.1;
     this.rainDepth = opts.rainDepth ?? 0.075;
-    this.evap = opts.evap ?? 0.008;
     this.lapse = opts.lapse ?? 1.2;
-    this.meltRate = opts.meltRate ?? 0.016;
     this.flow = opts.flow ?? 0.2;
     this.flowSteps = opts.flowSteps ?? 4;
     this.creep = opts.creep ?? 0.02;
@@ -152,7 +185,7 @@ export class Land {
     const size = n * n;
     this.row = new Uint16Array(size);   // which row each cell is in (rows run from north to south)
     for (let i = 0; i < size; i++) this.row[i] = (i / n) | 0;
-    this.rowTemp = new Float64Array(n).fill(8);   // the air temperature at the middle height, row by row (set by each step)
+    this.free = new Float64Array(n).fill(8);   // the free atmosphere's temperature at the middle height, row by row: the outside input (set by each step)
     this.elev = new Float64Array(size);
     this.water = new Float64Array(size).fill(opts.water ?? 0.5);
     this.nitrogen = new Float64Array(size).fill(opts.nitrogen ?? 0.3);
@@ -191,10 +224,30 @@ export class Land {
     this.light = new Float32Array(size);   // the sunlight each cell gets now: slopes facing the sun get more than flat ground, slopes facing away less
     this.flat = new Float64Array(n);       // ...and what flat ground at each row gets
     this.slope = new Float32Array(size);   // the sunlight on each cell minus what flat ground there gets: positive on slopes facing the sun, negative on ones turned away or in shade
-    // the ground is heated by the sun it absorbs and cooled by radiating heat away (and loses it to the air above): where the air is `a` degrees, bare ground in full sun settles `sunHeat`
-    // degrees above it, and the dark ground at night `radCool` below it. Snow reflects most of the sun, so snow-covered ground stays cold.
-    this.sunHeat = opts.sunHeat ?? 14;
-    this.radCool = opts.radCool ?? 2;
+    // The ground's surface has an energy balance (see `warmGround`): the sun it absorbs and the heat the sky sends down warm it; it loses heat by radiating, to the air above it, and by evaporating water.
+    // The air's own temperature is the regional climate (climateRows), not something the ground changes. The ground's surface is a layer about as deep as a day's warmth reaches, with the heat capacity of
+    // dry soil (`cDry`, J/m2/K) plus the water on it. Sunlight is thinned by the air (`trans` of it gets through straight overhead, less when the sun is low) and by cloud, which the model has no weather
+    // for, so `trans` is the average over clear and cloudy days; and cloud makes the sky send down more (`lwCloud`: the share of the gap between a clear sky's glow and a black body's that cloud fills).
+    this.trans = opts.trans ?? 0.672;
+    this.lwCloud = opts.lwCloud ?? 0.3;
+    this.emis = opts.emis ?? 0.97;               // how well the ground radiates, against a black body
+    this.hAir = opts.hAir ?? 18;                 // W/m2/K that bare or grassy ground trades with the air above it (a light breeze over a rough surface)...
+    this.hSnow = opts.hSnow ?? 5;                // ...and snow, over which air that is warmer than the surface lies still and trades much less
+    this.hUnstable = opts.hUnstable ?? 0.1;      // ...and warmer ground stirs the air above it: the exchange grows by this share for each degree the surface is warmer than the air
+    // Under the surface the ground is a layer of its own (`soil`, the temperature animals' feet and plants' roots are in). The surface passes heat to it through whatever lies on top: snow, ice and the soil itself,
+    // each as thick as it is and as poor a conductor (W/m/K) as it is, so a snowpack keeps the ground under it near freezing while the air above goes far below. Deeper still the ground
+    // holds the year's average warmth (it follows the ground layer's temperature with a lag of `tauDeep` seconds, so snow, which keeps the ground warmer than the air, raises it), and the layer trades heat with it through `gDeep` (W/m2/K).
+    this.kSnow = opts.kSnow ?? 0.2;  this.rhoSnow = opts.rhoSnow ?? 250;
+    this.kIce = opts.kIce ?? 2.2;    this.rhoIce = opts.rhoIce ?? 917;
+    this.kGround = opts.kGround ?? 1; this.dGround = opts.dGround ?? 0.075;
+    this.gDeep = opts.gDeep ?? 1; this.gLake = opts.gLake ?? 0.05; this.tauDeep = opts.tauDeep ?? 0.5 * 365 * 86400;
+    this.cDry = opts.cDry ?? 3e5;                // J/m2/K of the layer of dry soil that follows the day
+    this.ptAlpha = opts.ptAlpha ?? 1.26;         // Priestley-Taylor: how much a wet surface evaporates, in proportion to the energy it has left
+    // A snowpack holds heat too: it has to warm to freezing all through before it melts, it holds some of its meltwater (a share `snowRetain` of its own weight) and the water freezes again when the surface turns cold at night.
+    // `pack` is the heat it holds (J/m2): below zero when it is colder than freezing (by at most `coldK` degrees), above when it holds liquid water. It exchanges heat with the cold surface at `gTop` (W/m2/K).
+    this.snowRetain = opts.snowRetain ?? 0.1; this.gTop = opts.gTop ?? 2; this.coldK = opts.coldK ?? 10;
+    this.iceMin = opts.iceMin ?? 1;              // water deeper than this (units) freezes over in winter, and trades heat with the ground below only at `gLake` (a lake bed gives far less than dry ground)
+    this.wetCrit = opts.wetCrit ?? 1;            // the depth of water (in units) at which the surface evaporates as freely as it can
     this.albedo = opts.albedo ?? 0.2;            // the share of sunlight bare, grassy ground reflects
     this.snowAlbedo = opts.snowAlbedo ?? 0.8;    // ...and fresh snow
     this.snowAlbedoDepth = opts.snowAlbedoDepth ?? 0.3;   // (snow this deep covers the ground completely)
@@ -212,21 +265,29 @@ export class Land {
     this.hKm = new Float64Array(size);
     const meanElev = this.sum(this.elev) / size, kmPerUnit = this.metresPerUnit ? this.metresPerUnit / 1000 : this.lapse / 6.5;
     for (let i = 0; i < size; i++) this.hKm[i] = (this.elev[i] - meanElev) * kmPerUnit;
-    this.chill = new Float64Array(size);   // how much colder than the map's average height each cell's air is right now (the air cools faster with height in summer than in winter)
-    this.kOro = 0.72;                       // how much more it rains per km of height right now (set each step from the season)
-    this.updateChill(6);
+    this.zKm = new Float64Array(size);   // how high each cell is above sea level, km (a toy map without real heights is taken to be at about 1.8 km on average)
+    for (let i = 0; i < size; i++) this.zKm[i] = this.metresPerUnit ? (this.minMetres + this.elev[i] * this.metresPerUnit) / 1000 : 1.8 + this.hKm[i];
 
-    // ground temperature: one number per cell. It follows the air above it with a lag, conducts to the eight cells around it, and is
-    // warmed by the animals standing on it. Snow melts by it, grass grows by it, and animals feel it.
+    // ground temperature: one number per cell, the layer of ground under the surface (see `warmGround`). It is warmed by the animals standing on it. Grass grows by it and animals feel it.
     this.soil = new Float64Array(size);
+    this.pack = new Float64Array(size);       // the heat a snowpack holds (see `retain`)
+    this.ice = new Float64Array(size);        // ice on the water, as a depth of water (it only insulates: the water stays counted as water)
+    this.tDeep = new Float64Array(size);      // the temperature of the deep ground: it follows the ground layer's with a lag of `tauDeep` (its start is a guess, see setDeep)
+    // The air near the ground is a layer of its own, kept as its potential temperature (the temperature it would have at sea level, so that moving up or down a slope changes the air's temperature by the
+    // dry lapse rate, `gammaDry`). It is carried by the wind, which comes from outside the map (a share `windFactor` of the 700 hPa wind), so the air from the map's edge arrives as the free atmosphere. The surface warms it through a boundary layer as deep as the heat it gets lets it be (`hblMin` at night, up to `hblMax`, `kBL` metres for each W/m2),
+    // Air colder than the free atmosphere at its height is heavier than the air beside it, so it flows downhill (a gravity current: a speed of `drain` times the square root of the buoyancy it has times the depth of the layer times the slope, at most `drainMax` m/s), and collects in the low ground. The layer mixes with the free atmosphere at its middle height above: quickly (`tauConv` seconds) while the ground is heating it and the air is stirred, slowly (`tauStable`) while the ground is cooling it and the air above is cut off from it.
+    this.gammaDry = opts.gammaDry ?? 9.8;
+    this.windFactor = opts.windFactor ?? 0.4;   // the wind near the ground, as a share of the wind at 700 hPa, which drags on the ground
+    this.tauConv = opts.tauConv ?? 1800; this.tauStable = opts.tauStable ?? 43200; this.hblMin = opts.hblMin ?? 150; this.hblMax = opts.hblMax ?? 2000; this.kBL = opts.kBL ?? 10; this.drain = opts.drain ?? 0.3; this.drainMax = opts.drainMax ?? 3;
+    this.theta = new Float64Array(size); this._th = new Float64Array(size);
+    this.air = new Float64Array(size);        // the air temperature at each cell (the potential temperature less the dry lapse rate's share of the cell's height)
+    this.airFresh = true;
     this._s = new Float64Array(size);
     this.soilFresh = true;                    // set to the air temperature on the first step
-    this.soilLag = opts.soilLag ?? 0.05;      // the share of the gap to the air that closes each step
-    this.soilConduct = opts.soilConduct ?? 0.3;  // the share of the gap to its neighbours' average that closes each step
     this.heatGain = opts.heatGain ?? 15;      // degrees of ground warming from an animal burning one unit of energy
     this.immerse = opts.immerse ?? 3;           // standing in cold water makes the chill this many times worse...
     this.immerseDepth = opts.immerseDepth ?? 1; // ...once the water is this deep (shallower is in proportion)
-    this.waterHeat = opts.waterHeat ?? 1;     // water holds heat: each unit of depth adds this much to a cell's heat capacity (dry ground is 1; a toy-scale choice, about right for the daily swing)
+    // water holds heat: each unit of depth adds `waterMm` of water's heat capacity to the cell's (a snowpack too, up to a unit of it)
     this.waterHeatMax = opts.waterHeatMax ?? 5;  // (deeper than this, it is the same as this deep)
 
     // Water is still counted in the old unit, about 37 mm of water, but on a real map its level is now compared with the ground in real terms (a unit of height is a few hundred metres),
@@ -346,7 +407,7 @@ export class Land {
     let lo = Infinity, hi = -Infinity;
     for (let i = 0; i < size; i++) { const m = bin.charCodeAt(i * 2) | (bin.charCodeAt(i * 2 + 1) << 8); this.elev[i] = m; if (m < lo) lo = m; if (m > hi) hi = m; }
     const metresPerUnit = (hi - lo) / this.relief;
-    this.metresPerUnit = metresPerUnit;
+    this.metresPerUnit = metresPerUnit; this.minMetres = lo;   // (the ground is rescaled to start from 0, so a height in metres above sea level is `minMetres` more)
     this.cellRun = ((T.sideKm * 1000) / n) / metresPerUnit;
     this.west = T.west; this.east = T.east;   // the longitudes of the map's edges
     if (opts.lapse === undefined) this.lapse = (6.5 * metresPerUnit) / 1000;
@@ -418,12 +479,6 @@ export class Land {
     D.dl[4 * i + k] += v;
   }
 
-  /** Set how much colder than the average height every cell's air is, from the lapse rate (degrees a km) of the season. */
-  updateChill(lapse) {
-    const C = this.chill, H = this.hKm;
-    for (let i = 0; i < C.length; i++) C[i] = lapse * H[i];
-  }
-
   /** Dig the lakes: `L.cells` is [cell, mean depth in metres] for each lake cell. The bed is dug below the surface the elevation data shows, and the lake starts full. */
   carveLakes(L) {
     if (L.n !== this.n) throw new Error(`the lakes are for a map ${L.n} cells across, this one is ${this.n}`);
@@ -436,11 +491,20 @@ export class Land {
     if (this.dev) this.delta(i, 2, energy);
   }
 
-  /** How much heat it takes to warm cell i by a degree: wet ground and ponds change temperature slowly, because water has a high specific heat. */
-  capacity(i) { return 1 + this.waterHeat * Math.min(this.waterHeatMax, this.water[i]); }
+  /** How much heat it takes to warm cell i by a degree, in dry soils: wet ground and ponds change temperature slowly, because water has a high specific heat. */
+  capacity(i) { return this.heatCap(i) / this.cDry; }
 
-  /** The air temperature at cell i: colder up the hill. */
-  airAt(i) { return this.rowTemp[this.row[i]] - this.chill[i]; }
+  /** The heat capacity of the ground layer at cell i, J/m2/K: dry soil and the water in it or on it. */
+  heatCap(i) { return this.cDry + (PHYS.cWater * this.waterMm / 1000) * Math.min(this.waterHeatMax, this.water[i]); }
+
+  /** Guess the temperature of the deep ground to start from: the year's average of the free atmosphere at the cell's height (the ground layer moves it from there). */
+  setDeep(top, bottom) {
+    const n = this.n, size = n * n, rows = Array.from({ length: 12 }, (_, m) => climateRows((((MID_DOY[m] - 172 + 365) % 365) * 1800) / 365, n, 60, 30, 1, top, bottom));
+    for (let i = 0; i < size; i++) { let t = 0; for (const c of rows) t += c.free[this.row[i]] - c.freeLapse * this.zKm[i]; this.tDeep[i] = t / 12; }
+  }
+
+  /** The air temperature at cell i. */
+  airAt(i) { return this.air[i]; }
 
   /** The sun's place along each column of the map (see climateRows): colA = cos of the declination x cos of the hour angle there, colB = east component of the sun. */
   sunColumns(clim) {
@@ -494,21 +558,113 @@ export class Land {
   /** Make sure `light` is for the sun described by `clim` (on the card the ground's own light is worked out there, so this is only done when something here wants to look at it). */
   ensureLight(clim) { if (this.lightClim !== clim) this.sunlight(clim); }
 
-  /** Ground temperature: closes in on the air above it, and on what its neighbours are. Heat only moves around, so a neighbour's gain is
-   * this cell's loss; what a degree of it is worth depends on the cell's heat capacity, so wet cells swing slowly. */
-  warmGround() {
-    const n = this.n, size = n * n, S = this.soil, T = this._s, chill = this.chill, lag = this.soilLag, k = this.soilConduct / 8;
-    if (this.soilFresh) { for (let i = 0; i < size; i++) S[i] = this.rowTemp[this.row[i]] - chill[i]; this.soilFresh = false; }
+  /** The first step: the air is the free atmosphere, and the ground is the air's temperature. */
+  startAir(clim) {
+    if (!this.airFresh && !this.soilFresh) return;
+    const size = this.n * this.n;
+    for (let i = 0; i < size; i++) { this.theta[i] = clim.free[this.row[i]] + (this.gammaDry - clim.freeLapse) * this.zKm[i]; this.air[i] = this.theta[i] - this.gammaDry * this.zKm[i]; }
+    if (this.soilFresh) for (let i = 0; i < size; i++) this.soil[i] = this.air[i];
+    this.airFresh = false; this.soilFresh = false;
+  }
+
+  /** The surface's energy balance, one step. The surface (the skin of snow, ice or ground that meets the air) gains the sunlight it absorbs (what the air lets through, by how squarely the slope faces the sun, less what
+   * snow or ground reflects) and the heat the sky sends down (a function of the air's temperature and of cloud). It loses the heat it radiates (to the fourth power of its own temperature), the heat it gives the
+   * air (in proportion to how much warmer it is, and more when it is much warmer: warm ground stirs the air), the heat it takes to evaporate water (the Priestley-Taylor rate: a share of what is left of the net
+   * radiation, more in warm air, only as much as there is water, none through snow or ice) and the heat it passes down to the ground layer through whatever lies on it. The skin has no heat capacity, so its
+   * temperature is the one at which these balance (found by a few Newton steps). Snow or ice takes the skin no warmer than freezing: heat that would warm it melts snow, then ice, instead (so melting is the sun's work, not
+   * a rate per degree). Water freezes over where it is deep enough and the ground layer has cooled to freezing: the heat it loses through the new ice makes more ice.
+   * The ground layer warms or cools by what it gets from the skin and from the deep ground, by its heat capacity (wet cells swing slowly).
+   * Melting, freezing and evaporation move water over weeks of the season in a step, so they run `accel` times faster than the day's own heat flows. */
+  warmGround(clim) {
+    const n = this.n, size = n * n, S = this.soil, T = this._s, dt = clim.dt, accel = clim.accel;
+    const { sigma, lv, lf, gamma, solar } = PHYS, kg = this.waterMm, W = this.water, SN = this.snow, ICE = this.ice, PACK = this.pack, light = this.light, slope = this.slope, TD = this.tDeep;
+    this.startAir(clim);
+    const AIR = this.air, TH = this.theta, TN = this._th, zK = this.zKm, gD = this.gammaDry, rhoCp = PHYS.rhoAir * PHYS.cpAir, mixConv = 1 - Math.exp(-dt / this.tauConv), mixStable = 1 - Math.exp(-dt / this.tauStable),  deepK = 1 - Math.exp((-accel * dt) / this.tauDeep);
+    const dx = this.cellMetres ?? this.run * (this.metresPerUnit || 1), wC = (this.windFactor * clim.w700E * dt) / dx, wR = (this.windFactor * clim.w700N * dt) / dx;   // (how many cells the wind carries the air in a step: east, and north)
+    const lnTrans = Math.log(this.trans), emis = this.emis, rGround = this.dGround / this.kGround;
+    const snowDepth = kg / this.rhoSnow, iceDepth = kg / this.rhoIce;   // metres of snow, and of ice, in a unit of water
+    let gone = 0;
     for (let r = 0; r < n; r++) {
-      const mid = r * n, up = r > 0 ? mid - n : mid, dn = r < n - 1 ? mid + n : mid;   // (a wall counts as the cell itself)
-      const air = this.rowTemp[r];
       for (let c = 0; c < n; c++) {
-        const l = c > 0 ? c - 1 : c, rt = c < n - 1 ? c + 1 : c, i = mid + c;
-        const around = S[up + l] + S[up + c] + S[up + rt] + S[mid + l] + S[mid + rt] + S[dn + l] + S[dn + c] + S[dn + rt];
-        const alb = this.albedo + (this.snowAlbedo - this.albedo) * Math.min(1, this.snow[i] / this.snowAlbedoDepth);
-        T[i] = S[i] + (lag * (air - chill[i] + this.sunHeat * (1 - alb) * this.light[i] - this.radCool - S[i]) + k * around - this.soilConduct * S[i]) / this.capacity(i);
+        const i = r * n + c, tg = S[i], ta = AIR[i], ak = ta + 273.15;
+        const lit = light[i], u = lit - slope[i];   // (the sun's height for a flat cell here)
+        const sn = SN[i], ic = ICE[i], covered = sn > 0.02 || ic > 0.02;
+        const cover = Math.min(1, sn / this.snowAlbedoDepth);
+        const alb = this.albedo + (this.snowAlbedo - this.albedo) * cover;
+        const hb = this.hAir + (this.hSnow - this.hAir) * cover;   // (how much heat the surface trades with the air, before warm ground stirs it)
+        const gc = 1 / (rGround + (sn * snowDepth) / this.kSnow + (ic * iceDepth) / this.kIce);   // W/m2/K from the skin to the ground layer
+        const sw = u > 0 ? solar * Math.exp(lnTrans / Math.max(u, 0.08)) * (1 - alb) * lit : 0;
+        const clear = 1 - 0.261 * Math.exp(-7.77e-4 * ta * ta);   // the sky's emissivity in clear air (Idso and Jackson, 1969)
+        const lwd = (clear + this.lwCloud * (1 - clear)) * sigma * ak * ak * ak * ak;
+        const e = 0.6108 * Math.exp((17.27 * ta) / (ta + 237.3)), delta = (4098 * e) / ((ta + 237.3) * (ta + 237.3)), pt = (this.ptAlpha * delta) / (delta + gamma);
+        const wet = covered || W[i] <= 0 ? 0 : Math.min(1, W[i] / this.wetCrit);
+        let ts = covered ? Math.min(ta, 0) : tg, rn = 0, le = 0, h = hb;
+        for (let k = 0; k < 4; k++) {   // the skin temperature at which the heat in and out balance
+          const tk = ts + 273.15;
+          rn = sw + lwd - emis * sigma * tk * tk * tk * tk;
+          le = wet * pt * Math.max(0, rn);
+          h = hb * (1 + this.hUnstable * Math.max(0, ts - ta));
+          const f = rn - h * (ts - ta) - le - gc * (ts - tg);
+          ts += Math.max(-30, Math.min(30, f / (4 * emis * sigma * tk * tk * tk + h + gc)));
+        }
+        let q = gc * (ts - tg);   // what the ground layer gets from the skin
+        if (le > 0) {   // evaporating (le is a flux, W/m2; the water goes `accel` times faster than the day's heat)
+          const x = Math.min(W[i], (accel * le * dt) / (lv * kg));
+          W[i] -= x; gone += x;
+        }
+        if (sn > 0.02) {   // snow: its heat store takes the heat that would warm the skin above freezing and gives it up when the skin is colder
+          if (ts > 0) {
+            const f0 = 273.15;   // (the sky and the air go on for `accel` days of the season in a step; the heat the ground gives up is only what it holds, once)
+            PACK[i] += accel * dt * (sw + lwd - emis * sigma * f0 * f0 * f0 * f0 + hb * ta) + dt * gc * tg;
+            ts = 0; q = gc * (0 - tg);
+          } else PACK[i] = Math.max(PACK[i] - accel * dt * this.gTop * (0 - ts), -this.coldK * 2100 * kg * SN[i]);
+          const over = PACK[i] - this.snowRetain * SN[i] * lf * kg;   // heat beyond what the liquid it can hold takes melts snow and drains
+          if (over > 0) { const ms = Math.min(SN[i], over / (lf * kg)); SN[i] -= ms; W[i] += ms; PACK[i] -= ms * lf * kg; }
+          if (SN[i] <= 0) PACK[i] = 0;
+        } else if (ic > 0.02 && ts > 0) {   // ice takes the skin no warmer than freezing: what it would gain held at 0 C melts ice
+          const f0 = 273.15;
+          const m = accel * dt * (sw + lwd - emis * sigma * f0 * f0 * f0 * f0 + hb * ta) + dt * gc * tg;
+          if (m > 0) { const mi = Math.min(ICE[i], m / (lf * kg)); ICE[i] -= mi; }
+          ts = 0; q = gc * (0 - tg);
+        } else PACK[i] = 0;
+        const hh = hb * (1 + this.hUnstable * Math.max(0, ts - ta)), heat = hh * (ts - ta);   // the heat the surface gives the air, W/m2
+        {   // the air: the air that was upwind a step ago (from outside the map, the free atmosphere), warmed by that heat through the boundary layer, and mixed with the free atmosphere above
+          const thFree = (j, up = 0) => clim.free[this.row[j]] + (gD - clim.freeLapse) * (zK[j] + up);
+          const hbl = Math.min(this.hblMax, this.hblMin + this.kBL * Math.max(0, heat));
+          // cold air runs downhill: the buoyancy it has against the free atmosphere here, over the 270 K or so of the air
+          const dev = Math.max(0, thFree(i, hbl / 2000) - TH[i]), nE = this.nE[i], nN = this.nN[i], tilt = Math.hypot(nE, nN);
+          let dC = 0, dR = 0;
+          if (dev > 0 && tilt > 1e-9) {
+            const v = Math.min(this.drainMax, this.drain * Math.sqrt(((9.81 * dev) / 270) * hbl * (tilt / this.nU[i]))), k = (v * dt) / dx;
+            dC = (k * nE) / tilt; dR = (k * nN) / tilt;   // (the downhill direction, east and north: a cell north is a row up)
+          }
+          const fc = c - (wC + dC), fr = r + (wR + dR);
+          let up;
+          if (fc < 0 || fc > n - 1 || fr < 0 || fr > n - 1) up = thFree(Math.min(n - 1, Math.max(0, Math.round(fr))) * n + Math.min(n - 1, Math.max(0, Math.round(fc))));
+          else {
+            const c0 = Math.floor(fc), r0 = Math.floor(fr), c1 = Math.min(c0 + 1, n - 1), r1 = Math.min(r0 + 1, n - 1), tc = fc - c0, tr = fr - r0;
+            up = (TH[r0 * n + c0] * (1 - tc) + TH[r0 * n + c1] * tc) * (1 - tr) + (TH[r1 * n + c0] * (1 - tc) + TH[r1 * n + c1] * tc) * tr;
+          }
+          TN[i] = up + (dt * heat) / (rhoCp * hbl);
+          TN[i] += (thFree(i, hbl / 2000) - TN[i]) * (heat > 0 ? mixConv : mixStable);
+        }
+        let tn;
+        if (ICE[i] > 0) {   // water under ice is held at freezing; the heat it gains or loses (through the ice from the skin, and from the deep ground) melts or makes ice
+          const fw = q + this.gLake * TD[i];
+          const d = Math.max(-ICE[i], Math.min(W[i] - ICE[i], (-accel * dt * fw) / (lf * kg)));
+          ICE[i] += d; tn = 0;
+        } else {
+          const gd = W[i] > this.iceMin ? this.gLake : this.gDeep;
+          tn = tg + (dt * (q + gd * (TD[i] - tg))) / this.heatCap(i);
+          if (W[i] > this.iceMin && tn < 0) { ICE[i] = Math.min(W[i], (this.heatCap(i) * -tn) / (lf * kg)); tn = 0; }   // deep water that cools below freezing freezes over
+        }
+        T[i] = tn;
+        TD[i] += (tn - TD[i]) * deepK;
       }
     }
+    for (let i = 0; i < size; i++) AIR[i] = TN[i] - gD * zK[i];
+    this.theta = TN; this._th = TH;
+    this.ledger.evap += gone;
     this.soil = T; this._s = S;
   }
 
@@ -518,12 +674,11 @@ export class Land {
    */
   gpuPrep(clim) {
     this.sunColumns(clim);   // (the cells' light is worked out on the card; `sunlight` fills `light` here only when the picture wants it)
-    this.updateChill(clim.lapse); this.kOro = clim.kOro;
-    this.rowTemp = clim.temp;
-    this.temp = clim.temp[(this.n - 1) >> 1];
+    this.kOro = clim.kOro;
     const n = this.n, size = n * n;
-    let fresh = false;
-    if (this.soilFresh) { for (let i = 0; i < size; i++) this.soil[i] = this.rowTemp[this.row[i]] - this.chill[i]; this.soilFresh = false; fresh = true; }
+    const fresh = this.soilFresh || this.airFresh;
+    this.startAir(clim);
+    this.temp = this.air[((n >> 1) * n) + (n >> 1)];
     this.raining = this.rng.next() < this.rainChance * clim.wet;
     if (this.raining) {
       let fell = 0;
@@ -537,43 +692,26 @@ export class Land {
   /** One step of weather and water. `clim` comes from climateRows. */
   step(clim, occupied = null) {
     this.sunlight(clim);
-    this.updateChill(clim.lapse); this.kOro = clim.kOro;
-    this.rowTemp = clim.temp;   // row by row, at middle height; every cell is colder or warmer than this by its height (see airAt)
-    this.temp = clim.temp[(this.n - 1) >> 1];
-    this.warmGround();
+    this.kOro = clim.kOro;
+    this.warmGround(clim);
+    this.temp = this.air[((this.n >> 1) * this.n) + (this.n >> 1)];
     const n = this.n, size = n * n, W = this.water, N = this.nitrogen, E = this.elev, rng = this.rng;
 
     // --- rain: evenly over the whole grid, more often and heavier in the wet season
     this.raining = rng.next() < this.rainChance * clim.wet;
-    const S = this.snow, chill = this.chill;
+    const S = this.snow, AIR = this.air;
     if (this.raining) {
       let fell = 0;
       for (let i = 0; i < size; i++) {
         const r = this.row[i], d = this.rainDepth * clim.wet * clim.rain[r] * Math.max(0.1, 1 + this.kOro * this.hKm[i]);   // more falls in the north, and more the higher the ground
-        if (clim.temp[r] - chill[i] < 1) S[i] += d; else W[i] += d;           // snow where the air is near freezing
+        if (AIR[i] < 1) S[i] += d; else W[i] += d;           // snow where the air is near freezing
         fell += d;
       }
       this.ledger.rain += fell;
     }
-    // snowmelt: faster the warmer it is; the water soaks into the ground it lies on
-    for (let i = 0; i < size; i++) {
-      if (S[i] <= 0) continue;
-      const above = this.soil[i];   // melts by how warm the ground under it is
-      if (above <= 0) continue;
-      const m = Math.min(S[i], this.meltRate * above);
-      S[i] -= m; W[i] += m;
-    }
     for (let i = 0; i < size; i++) N[i] += this.deposit;
     this.ledger.nIn += this.deposit * size;
 
-    // --- evaporation: most at noon in summer, from the surface of bare ground and open water alike
-    let gone = 0;
-    for (let i = 0; i < size; i++) {
-      const r = this.row[i], e = this.evap * (0.25 + 0.75 * this.light[i]);
-      const warm = 0.6 + 0.4 * Math.min(1.5, Math.max(0, (clim.temp[r] - chill[i]) / 15));   // less evaporates where it is colder
-      const x = Math.min(W[i], e * warm); W[i] -= x; gone += x;
-    }
-    this.ledger.evap += gone;
     let soaked = 0;
     for (let i = 0; i < size; i++) { const x = Math.min(Math.min(W[i], this.soakMax) * this.seep + this.floodSeep * Math.max(0, W[i] - 1.5), this.seepMax); W[i] -= x; soaked += x; }
     this.ledger.seep += soaked;
@@ -640,7 +778,7 @@ export class Land {
   /** Grass: growth (drinking and taking nitrogen), dying back (giving nitrogen back as litter), and seeds spreading in. */
   grow(clim, occupied) {
     const n = this.n, size = n * n, G = this.grass, G0 = this._g, W = this.water, N = this.nitrogen;
-    const chill = this.chill, nbr = this.nbr;
+    const nbr = this.nbr;
     G0.set(G);
     let drunk = 0;
     for (let i = 0; i < size; i++) {
@@ -676,7 +814,7 @@ export class Land {
   }
 
   /** The air temperature at cell i right now: colder the higher it is. */
-  tempAt(i) { return this.soilFresh ? this.airAt(i) : this.soil[i]; }   // the ground temperature at cell i
+  tempAt(i) { return this.soilFresh || this.snow[i] > 0.02 || this.ice[i] > 0.02 ? this.airAt(i) : this.soil[i]; }   // the ground temperature at cell i (an animal on snow or ice is in the air)
 
   /** How much more energy an animal burns in the cold at cell i (1 when it is mild), and more again when standing in water. */
   coldAt(i) {

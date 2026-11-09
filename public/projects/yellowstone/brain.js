@@ -66,7 +66,7 @@ export function createBrainPanel(host) {
     const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'gp-svg', role: 'img', 'aria-label': 'The animal\'s network: what it sees, the hidden neurons its genome grew, and what it picks' }, subHost);
     const p = { k, input: [], move: [], breed: [] };
     let marked = [];
-    const mark = (e, how, a = 1) => { e.dataset.hl = how; e.style.setProperty('--hl-a', a.toFixed(2)); marked.push(e); };
+    const mark = (e, how, a = 1) => { if (!e) return; e.dataset.hl = how; e.style.setProperty('--hl-a', a.toFixed(2)); marked.push(e); };
     const unhighlight = () => { for (const e of marked) { delete e.dataset.hl; e.style.removeProperty('--hl-a'); } marked = []; };
     // the eye sectors a neuron depends on through the neurons it listens to (and theirs), with how strongly the connections along the way pass it on (the product of the weights is too small to mean much, so just the strongest link)
     const reach = new Map();
