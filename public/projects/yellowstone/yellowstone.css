@@ -41,6 +41,10 @@
   display: block; width: 100%; aspect-ratio: 1; image-rendering: pixelated;
   background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; cursor: crosshair;
 }
+.gp [hidden] { display: none !important; }
+.gp canvas#gp-canvas3d { cursor: grab; touch-action: none; image-rendering: auto; }
+.gp canvas#gp-canvas3d:active { cursor: grabbing; }
+.gp .fields input[type="range"] { width: 7rem; }
 .gp .key { display: flex; flex-wrap: wrap; gap: .25rem 1rem; list-style: none; padding: 0; margin: .5rem 0 0; font-size: .85rem; color: var(--muted); }
 .gp .key li { display: flex; align-items: center; gap: .35rem; }
 .gp .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: none; }

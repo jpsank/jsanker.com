@@ -35,12 +35,15 @@ page_start([
   <li><strong>Evolving.</strong> A child copies its parent's genome, with small random changes to weights and biases and now and then a new neuron or connection. Two neighbours that each pick the other as the one to breed with breed together and mix their genomes. Released wolves start with random brains and have to evolve their way into hunting.</li>
   <li><strong>Genome to brain.</strong> The genome is a small network (grown by NEAT) that is asked, for every pair of neurons in a fixed layout, "how strongly should these two be wired?" The answers are the weights of the brain that then sees and acts (the HyperNEAT recipe). That is how a couple of dozen genes can paint a brain of about 7,000 connections.</li>
   <li><strong>Where it runs.</strong> If your browser has WebGPU, the ground (grass, water, snow, nitrogen and temperature on all 160,000 cells) and every animal's brain are worked out on the graphics card, thousands of cells and animals at a time, and only the animals' choices come back to be carried out. A brain is painted on the card from its genome the moment its animal is born. Without WebGPU, or with the box below ticked off, the same rules run on the CPU, which is much slower on a map this big. The card works in 32-bit numbers and the CPU in 64-bit, so a seed repeats on the same machine and setting but not between the two.</li>
+  <li><strong>The 3D view.</strong> With WebGPU you can switch the map to a 3D landscape, drag it round, zoom in and slide across it. The land is drawn at its real heights, stretched upward (the real land is very flat beside its width, and a slider sets how much), in the same colours as the flat map, so every layer shows there too. Hills hide what is behind them, because the picture is made from where the camera is, much as an animal sees from where it stands. Animals are small arrowheads pointing the way they face, and clicking one shows its brain and lays the field of view it sees with on the ground. The graphics card draws the surface straight from the heights and colours it already has, and a run goes no slower with the 3D view showing.</li>
 </ul>
 
 <h2>Run it</h2>
 <div class="sim">
   <div class="sim-view">
     <canvas id="gp-canvas" width="400" height="400" role="img" aria-label="The 400 by 400 world: ground with grass and water, animals from orange (grass-eaters) to yellow (meat-eaters)."></canvas>
+    <canvas id="gp-canvas3d" hidden tabindex="0" role="img" aria-label="The same world as a 3D landscape you can turn and zoom: animals are small arrowheads pointing the way they face. Arrow keys turn the view, plus and minus zoom."></canvas>
+    <p id="gp-hint3d" class="small muted" hidden>Drag to turn the view, shift-drag or right-drag to slide it, scroll or pinch to zoom, double-click to start again. Click an animal to see its brain.</p>
     <ul class="key" aria-label="Colour key">
       <li><span class="sw sw-grass"></span>grass</li>
       <li><span class="sw sw-water"></span>water</li>
@@ -66,6 +69,15 @@ page_start([
           <option value="64">as fast as it goes</option>
         </select>
       </label>
+    </div>
+    <div class="fields">
+      <label>View
+        <select id="gp-view">
+          <option value="map" selected>Map</option>
+          <option value="3d">3D</option>
+        </select>
+      </label>
+      <label id="gp-exag-wrap" hidden>Height &times;<input type="range" id="gp-exag" min="1" max="20" step="1" value="8"><output id="gp-exag-out">8</output></label>
     </div>
     <div class="fields">
       <label>Show

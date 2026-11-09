@@ -2,6 +2,7 @@
 import { World, EYES, fovDeg } from './sim.js';
 import { createBrainPanel } from './brain.js';
 import { createGpu } from './gpu.js';
+import { createView3d } from './view3d.js';
 import { LANDVIEW, landRgb } from './land.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
@@ -147,7 +148,10 @@ async function init() {
   if (!gpu) useGpu.parentElement.title = 'This browser has no WebGPU, so the ground and the brains run on the CPU.';
   const stat = $('gp-stat'), clock = $('gp-clock'), inspect = $('gp-inspect'), readout = $('gp-readout'), layerIn = $('gp-layer');
 
+  const canvas3 = $('gp-canvas3d'), viewIn = $('gp-view'), exagIn = $('gp-exag'), exagOut = $('gp-exag-out'), exagWrap = $('gp-exag-wrap'), hint3 = $('gp-hint3d');
   const brain = createBrainPanel($('gp-brain'));
+  let view3d = null;   // the 3D view, made the first time it is asked for (it needs the graphics card)
+  const in3d = () => !!view3d && viewIn.value === '3d';
   let world = null, running = false, redrawChart = null, lastChart = 0, lastRate = { at: performance.now(), t: 0, sps: 0 };
 
   const mix = (dst, a, b, f) => { dst[0] = a[0] + (b[0] - a[0]) * f; dst[1] = a[1] + (b[1] - a[1]) * f; dst[2] = a[2] + (b[2] - a[2]) * f; };   // (dst may be a or b)
@@ -177,16 +181,26 @@ async function init() {
   // The ground changes slowly and the animals every step, so the ground is repainted every few steps (or when the layer changes) and only the animals each frame.
   let groundData = null, groundAt = 0, groundWorld = null, groundLayer = '';
   function paint() {
-    const d = img.data, L = world.land, layer = layerIn.value, n = world.n;
+    const L = world.land, layer = layerIn.value, n = world.n;
+    let groundNew = false;
     if (groundWorld !== world || groundLayer !== layer || world.t - groundAt >= 6 || world.t < groundAt) {
-      if (!groundData || groundData.length !== d.length) groundData = new Uint8ClampedArray(d.length);
+      if (!groundData || groundData.length !== n * n * 4) groundData = new Uint8ClampedArray(n * n * 4);
       if (world.gpu) L.ensureLight(world.clim);   // (the card works out the light itself; the picture needs it here too)
       for (let i = 0, p = 0; i < n * n; i++, p += 4) {
         ground(i, layer, L, shown);
         groundData[p] = shown[0]; groundData[p + 1] = shown[1]; groundData[p + 2] = shown[2]; groundData[p + 3] = 255;
       }
-      groundAt = world.t; groundWorld = world; groundLayer = layer;
+      groundAt = world.t; groundWorld = world; groundLayer = layer; groundNew = true;
     }
+    if (in3d()) {   // the 3D view draws the ground and the animals itself, from the same colours
+      if (groundNew) view3d.setColours(groundData);
+      const o = brain.selected, watched = o && world.at(o.r, o.c) === o ? o : null;
+      view3d.setAnimals([...world.animals.values()], animalColour, watched,
+        watched && { x: watched.c + 0.5, z: watched.r + 0.5, mid: (watched.h * Math.PI) / 4, half: (fovDeg(watched.eyes) / 2) * Math.PI / 180, radius: EYES.march });
+      brain.update(world);
+      return;
+    }
+    const d = img.data;
     d.set(groundData);
     for (const o of world.animals.values()) {
       const c = animalColour(o), p = (o.r * n + o.c) * 4;
@@ -213,7 +227,7 @@ async function init() {
     }
     const gone = world.animals.size === 0 && world.t > 0;
     const w = world.when();
-    canvas.style.filter = `brightness(${(NIGHT + (1 - NIGHT) * world.sun).toFixed(2)})`;   // the world darkens at night, but not to black
+    canvas.style.filter = canvas3.style.filter = `brightness(${(NIGHT + (1 - NIGHT) * world.sun).toFixed(2)})`;   // the world darkens at night, but not to black
     stat.textContent =
       `Step ${fmt(world.t)} · ${fmt(world.nPrey)} prey` + (world.nWolf || world.hunted ? ` · ${fmt(world.nWolf)} wolves` : '') + ` · ${fmt(world.history.grass.at(-1))} grass` +
       (running ? ` · ${lastRate.sps.toFixed(0)} steps/s` : '');
@@ -256,6 +270,7 @@ async function init() {
     world = new World({ seed, mating: mating.checked, gpu: useGpu.checked ? gpu : null });
     canvas.width = canvas.height = world.n;
     img = ctx.createImageData(world.n, world.n);
+    view3d?.setWorld(world);
     paint(); status();
     inspect.textContent = 'Click any animal to see its brain.';
     if (!redrawChart) {
@@ -289,6 +304,21 @@ async function init() {
   layerIn.addEventListener('change', async () => { await pull(world); paint(); });
   useGpu.addEventListener('change', reset);
   mating.addEventListener('change', () => { if (world) world.mating = mating.checked; });
+
+  function setView() {
+    if (viewIn.value === '3d' && !view3d && gpu) {
+      try { view3d = createView3d(canvas3, gpu.device, { onPick: (o) => { if (o) { brain.show(world, o); paint(); } } }); } catch (e) { console.warn('The 3D view could not start:', e); }
+      if (view3d) { view3d.setWorld(world); view3d.setExaggeration(+exagIn.value); } else viewIn.value = 'map';
+    }
+    const three = in3d();
+    canvas.hidden = three; canvas3.hidden = !three; exagWrap.hidden = hint3.hidden = !three;
+    view3d?.setActive(three);
+    groundLayer = '';   // (paint the ground again for whichever view is showing)
+    paint();
+  }
+  if (!gpu) { viewIn.querySelector('option[value="3d"]').disabled = true; viewIn.title = 'The 3D view needs WebGPU, which this browser does not have.'; }
+  viewIn.addEventListener('change', setView);
+  exagIn.addEventListener('input', () => { exagOut.textContent = exagIn.value; view3d?.setExaggeration(+exagIn.value); });
 
   canvas.addEventListener('click', (ev) => {
     const box = canvas.getBoundingClientRect();
