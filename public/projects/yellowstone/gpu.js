@@ -608,6 +608,7 @@ const PROGW: u32 = ${PROGRAM.words}u;
 const EDGE0: u32 = ${EDGE0}u;
 const G: u32 = ${ES.grid}u;
 const CELLS: u32 = ${ES.cells}u;
+const PLACES: u32 = ${ES.places}u;
 const NIN: u32 = ${BRAIN.nIn}u;
 const NOUT: u32 = ${BRAIN.nOut}u;
 const BIASAT: u32 = ${BRAIN.biasAt}u;
@@ -615,10 +616,26 @@ const ENT: u32 = ${BRAIN.entAt}u;
 const OUTAT: u32 = ${BRAIN.outAt}u;
 const FANH: u32 = ${ES.fanH}u;
 const FANO: u32 = ${ES.fanO}u;
-var<workgroup> wsh: array<f32, CELLS>;
-var<workgroup> dep: array<u32, CELLS>;
+var<workgroup> wsh: array<f32, PLACES>;
+var<workgroup> sc: array<u32, PLACES>;
+var<workgroup> stg: array<u32, ${ES.places * ES.fanH}>;   // (the connections found for each place of the layer being grown, until the layer's neurons are known)
+var<workgroup> hdep: array<u32, CELLS>;
+var<workgroup> hcell: array<u32, CELLS>;
+var<workgroup> hcnt: array<u32, CELLS>;
 var<workgroup> useful: array<atomic<u32>, CELLS>;
 var<workgroup> bsh: array<f32, ${ES.cells + BRAIN.nOut}>;
+
+fn offOf(stage: u32) -> u32 {
+  if (stage == 1u) { return ${ES.layerOff[0]}u; }
+  if (stage == 2u) { return ${ES.layerOff[1]}u; }
+  return ${ES.layerOff[2]}u;
+}
+fn capOf(stage: u32) -> u32 {
+  if (stage == 1u) { return ${ES.layerCap[0]}u; }
+  if (stage == 2u) { return ${ES.layerCap[1]}u; }
+  return ${ES.layerCap[2]}u;
+}
+fn layerAt(l: u32) -> f32 { return (${ES.layerAt(0).toFixed(1)}) + (${(ES.layerAt(1) - ES.layerAt(0)).toFixed(1)}) * f32(l); }
 
 fn actv(k: u32, x: f32) -> f32 {
   if (k == 0u) { return 1.0 / (1.0 + exp(-x)); }
@@ -628,9 +645,9 @@ fn actv(k: u32, x: f32) -> f32 {
   return cos(x);
 }
 // the genome's answer for a receiving place and a sending place
-fn cppn(pb: u32, r: vec3<f32>, s: vec3<f32>) -> f32 {
+fn cppn(pb: u32, r: vec3<f32>, s: vec3<f32>, lr: f32, ls: f32) -> f32 {
   var vals: array<f32, 64>;
-  vals[0] = r.x; vals[1] = r.y; vals[2] = r.z; vals[3] = s.x; vals[4] = s.y; vals[5] = s.z;
+  vals[0] = r.x; vals[1] = r.y; vals[2] = r.z; vals[3] = s.x; vals[4] = s.y; vals[5] = s.z; vals[6] = lr; vals[7] = ls;
   let count = prog[pb];
   for (var k = 0u; k < count; k = k + 1u) {
     let nd = pb + 3u + 4u * k;
@@ -649,7 +666,7 @@ fn cellAt(d: u32) -> vec3<f32> {
 fn place(i: u32) -> vec3<f32> { return vec3<f32>(places[i * 3u], places[i * 3u + 1u], places[i * 3u + 2u]); }
 fn toH(w: f32) -> u32 { return pack2x16float(vec2<f32>(w, 0.0)) & 0xffffu; }
 
-@compute @workgroup_size(${ES.cells})
+@compute @workgroup_size(${ES.places})
 fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t: u32) {
   let b = wg.y * 65535u + wg.x;
   if (b >= cp.x) { return; }   // (every thread of the workgroup agrees)
@@ -659,31 +676,32 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
   let ci = t / (G * G);
   let cj = (t / G) % G;
   let cl = t % G;
-  var cnt = 0u;
-  dep[t] = 0u;
-  atomicStore(&useful[t], 0u);
+  if (t < CELLS) { hdep[t] = 0u; hcell[t] = 0u; hcnt[t] = 0u; atomicStore(&useful[t], 0u); }
   workgroupBarrier();
 
-  // a connection is kept where it is strong and differs from what is next door (see esnet.js)
+  // layer by layer, every layer with the whole grid of places to itself: a connection is kept where it is strong and differs from what is next door (see esnet.js)
   for (var stage = 1u; stage <= ${ES.stages}u; stage = stage + 1u) {
-    let mine = dep[t];
+    var cnt = 0u;
     var nSrc = NIN;
-    if (stage > 1u) { nSrc = CELLS; }
+    if (stage > 1u) { nSrc = offOf(stage); }
     for (var k = 0u; k < nSrc; k = k + 1u) {
       var s = vec3<f32>(0.0);
       var sid = 0u;
+      var ls = layerAt(0u);
       var isSrc = true;
       if (stage == 1u) {
         sid = (k * ${ES.scramble}u) % NIN;
         s = place(sid);
       } else {
-        let ds = workgroupUniformLoad(&dep[k]);
-        isSrc = ds >= 1u && ds < stage;
+        let ds = workgroupUniformLoad(&hdep[k]);
+        let dc = workgroupUniformLoad(&hcell[k]);
+        isSrc = ds >= 1u;
         sid = NIN + k;
-        s = cellAt(k);
+        s = cellAt(dc);
+        ls = layerAt(ds);
       }
       if (isSrc) {
-        let w = cppn(pb, me, s);
+        let w = cppn(pb, me, s, layerAt(stage), ls);
         wsh[t] = w;
         workgroupBarrier();
         let aw = abs(w);
@@ -698,14 +716,25 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
           if (pos < G - 1u) { dh = abs(w - wsh[t + st]); }
           band = max(band, min(dl, dh));
         }
-        if (mine == 0u && cnt < FANH && aw > ${ES.wThr} && band > ${ES.bandThr}) {
-          wts[base + ENT + t * FANH + cnt] = sid | (toH(w) << 16u);
+        if (cnt < FANH && aw > ${ES.wThr} && band > ${ES.bandThr}) {
+          stg[t * FANH + cnt] = sid | (toH(w) << 16u);
           cnt = cnt + 1u;
         }
         workgroupBarrier();
       }
     }
-    if (mine == 0u && cnt > 0u) { dep[t] = stage; }
+    // the places with a connection are the layer's neurons (the first of them, in the order of the places, as far as there is room)
+    sc[t] = cnt;
+    workgroupBarrier();
+    var rank = 0u;
+    for (var j = 0u; j < t; j = j + 1u) { if (sc[j] > 0u) { rank = rank + 1u; } }
+    if (cnt > 0u && rank < capOf(stage)) {
+      let id = offOf(stage) + rank;
+      for (var q = 0u; q < cnt; q = q + 1u) { wts[base + ENT + id * FANH + q] = stg[t * FANH + q]; }
+      hdep[id] = stage;
+      hcell[id] = t;
+      hcnt[id] = cnt;
+    }
     workgroupBarrier();
   }
 
@@ -714,8 +743,9 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
   if (t < NOUT) {
     let oc = place(NIN + t);
     for (var n = 0u; n < CELLS; n = n + 1u) {
-      if (dep[n] > 0u && cntO < FANO) {
-        let v = cppn(pb, oc, cellAt(n));
+      let dn = hdep[n];
+      if (dn > 0u && cntO < FANO) {
+        let v = cppn(pb, oc, cellAt(hcell[n]), layerAt(${ES.stages + 1}u), layerAt(dn));
         if (abs(v) > ${ES.outThr}) {
           wts[base + OUTAT + t * FANO + cntO] = (NIN + n) | (toH(v) << 16u);
           cntO = cntO + 1u;
@@ -727,28 +757,29 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
   workgroupBarrier();
   // a neuron that cannot reach an output is dropped, and so are the neurons that only fed it
   for (var stage = ${ES.stages}u; stage >= 2u; stage = stage - 1u) {
-    if (dep[t] == stage && atomicLoad(&useful[t]) == 1u) {
-      for (var q = 0u; q < cnt; q = q + 1u) {
+    if (t < CELLS && hdep[t] == stage && atomicLoad(&useful[t]) == 1u) {
+      for (var q = 0u; q < hcnt[t]; q = q + 1u) {
         let src = wts[base + ENT + t * FANH + q] & 0xffffu;
         if (src >= NIN) { atomicStore(&useful[src - NIN], 1u); }
       }
     }
     workgroupBarrier();
   }
-  let keep = atomicLoad(&useful[t]) == 1u;
-  if (keep) {
-    wts[base + t] = dep[t] | (cnt << 4u);
-    bsh[t] = cppn(pb, me, vec3<f32>(-1.0, 0.0, 0.0));
-  } else {
-    wts[base + t] = 0u;
-    bsh[t] = 0.0;
+  if (t < CELLS) {
+    if (atomicLoad(&useful[t]) == 1u) {
+      wts[base + t] = hdep[t] | (hcnt[t] << 4u);
+      bsh[t] = cppn(pb, cellAt(hcell[t]), vec3<f32>(-1.0, 0.0, 0.0), layerAt(hdep[t]), layerAt(0u));
+    } else {
+      wts[base + t] = 0u;
+      bsh[t] = 0.0;
+    }
   }
   if (t < NOUT) {
     wts[base + CELLS + t] = 1u | (cntO << 4u);
-    bsh[CELLS + t] = cppn(pb, place(NIN + t), vec3<f32>(-1.0, 0.0, 0.0));
+    bsh[CELLS + t] = cppn(pb, place(NIN + t), vec3<f32>(-1.0, 0.0, 0.0), layerAt(${ES.stages + 1}u), layerAt(0u));
   }
   workgroupBarrier();
-  for (var p = t; p < ${Math.ceil((ES.cells + BRAIN.nOut) / 2)}u; p = p + CELLS) {
+  for (var p = t; p < ${Math.ceil((ES.cells + BRAIN.nOut) / 2)}u; p = p + PLACES) {
     var hi = 0.0;
     if (2u * p + 1u < CELLS + NOUT) { hi = bsh[2u * p + 1u]; }
     wts[base + BIASAT + p] = pack2x16float(vec2<f32>(bsh[2u * p], hi));

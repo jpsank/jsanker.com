@@ -18,7 +18,7 @@ const POS = '235,104,52', NEG = '59,130,196';
 const signed = (v) => (v >= 0 ? `rgba(${POS},${Math.min(1, v).toFixed(2)})` : `rgba(${NEG},${Math.min(1, -v).toFixed(2)})`);
 const num = (v) => (Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(2));
 
-const COORD = ['to x', 'to y', 'to z', 'from x', 'from y', 'from z'];
+const COORD = ['to x', 'to y', 'to z', 'from x', 'from y', 'from z', 'to layer', 'from layer'];
 const ACT_SHORT = ['sigmoid', 'relu', 'tanh', 'sin', 'cos'];
 
 const HEADINGS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];

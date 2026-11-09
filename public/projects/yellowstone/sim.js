@@ -55,7 +55,7 @@ const P = {
   actFunc: 0.1, bias: 0.5, biasScale: 0.1, weight: 0.5, weightScale: 0.1,
 };
 
-const N_IN = 8;  // input ids are -8 .. -1; only the first six are ever fed (see phenotype())
+const N_IN = 8;  // input ids are -8 .. -1: where the receiving neuron is (three numbers), where the sending one is (three more), and the layer of each (see esnet.js)
 const N_OUT = 2; // output ids are 0 and 1; only output 0 is ever read, as in the original
 
 const edgeKey = (s, t) => s + ',' + t;
@@ -214,12 +214,12 @@ function cppnTables(g) {
   return { act, bias, start, src: Int32Array.from(srcs), w: Float64Array.from(ws), out: slot.has(0) ? slot.get(0) : zero, zero, count: order.length };
 }
 
-/** Compile a genome into a function of six numbers that returns output 0. */
+/** Compile a genome into a function of eight numbers (two places and the layer of each) that returns output 0. */
 function compileCppn(g) {
   const { act, bias, start, src, w, out, zero } = cppnTables(g);
   const vals = new Float64Array(zero + 1);
-  return function cppn(a, b, c, d, e, f) {
-    vals[0] = a; vals[1] = b; vals[2] = c; vals[3] = d; vals[4] = e; vals[5] = f;
+  return function cppn(a, b, c, d, e, f, g, h) {
+    vals[0] = a; vals[1] = b; vals[2] = c; vals[3] = d; vals[4] = e; vals[5] = f; vals[6] = g; vals[7] = h;
     for (let k = 0; k < act.length; k++) {
       let sum = bias[k];
       for (let j = start[k]; j < start[k + 1]; j++) sum += w[j] * vals[src[j]];
@@ -233,7 +233,7 @@ export const ACT_NAMES = ['sigmoid', 'relu', 'tanh', 'sin', 'cos'];
 
 /**
  * The part of a genome that does anything, for drawing: nodes on a path to output 0, the connections between them
- * (only the first six inputs are ever fed), and each node's depth. `unused` counts the genes that have no effect.
+ * and each node's depth. `unused` counts the genes that have no effect.
  */
 export function genomeGraph(g) {
   const incoming = new Map();
@@ -252,7 +252,7 @@ export function genomeGraph(g) {
   const edges = [];
   for (const e of g.edges.values()) {
     if (!required.has(e.t)) continue;
-    if (e.s < 0 ? e.s + N_IN < 6 : required.has(e.s)) edges.push({ s: e.s, t: e.t, w: e.w });
+    if (e.s < 0 || required.has(e.s)) edges.push({ s: e.s, t: e.t, w: e.w });
   }
   const depth = new Map(), busy = new Set();
   const dep = (n) => {
