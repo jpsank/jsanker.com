@@ -62,9 +62,40 @@ export function createBrainPanel(host) {
 
   function buildSub(org) {
     subHost.replaceChildren();
-    const k = 9, W = 640, cellG = 12, cellO = 24, H = 230, fan = 90;
+    const k = 9, W = 720, cellO = 24, H = 236, fan = 90;
     const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'gp-svg', role: 'img', 'aria-label': 'The animal\'s network: what it sees, the hidden neurons its genome grew, and what it picks' }, subHost);
-    const p = { k, input: [], hidden: [], move: [], breed: [] };
+    const p = { k, input: [], move: [], breed: [] };
+    let marked = [];
+    const mark = (e, how, a = 1) => { e.dataset.hl = how; e.style.setProperty('--hl-a', a.toFixed(2)); marked.push(e); };
+    const unhighlight = () => { for (const e of marked) { delete e.dataset.hl; e.style.removeProperty('--hl-a'); } marked = []; };
+    // the eye sectors a neuron depends on through the neurons it listens to (and theirs), with how strongly the connections along the way pass it on (the product of the weights is too small to mean much, so just the strongest link)
+    const reach = new Map();
+    const eyeVia = (d) => {
+      if (reach.has(d)) return reach.get(d);
+      const m = new Map(); reach.set(d, m);
+      const l = p.listens.get(d);
+      for (let q = 0; q < l.hid.length; q++) {
+        const a = Math.abs(l.hw[q]);
+        for (let t = 0; t < p.listens.get(l.hid[q]).eye.length; t++) { const i = p.listens.get(l.hid[q]).eye[t] / 3 | 0; m.set(i, Math.max(m.get(i) || 0, a * Math.abs(p.listens.get(l.hid[q]).ew[t]))); }
+        for (const [i, v] of eyeVia(l.hid[q])) m.set(i, Math.max(m.get(i) || 0, a * v));
+      }
+      return m;
+    };
+    // what a neuron listens to (the parts of the eye and the neurons) and what it feeds (the pick cells), lit up around it
+    const highlight = (d) => {
+      unhighlight();
+      mark(p.neuron.get(d), 'self');
+      const l = p.listens.get(d), f = p.feeds.get(d), fw = p.feedW.get(d);
+      // darker where the connection is stronger (as a share of the strongest one of that kind)
+      const top = (v) => Math.max(1e-9, ...v.map(Math.abs)), te = top(l.ew), th = top(l.hw), tf = top(fw);
+      const via = eyeVia(d), tv = Math.max(1e-9, ...via.values());
+      for (const [i, v] of via) mark(p.input[i], 'via', 0.45 + 0.55 * v / tv);
+      const direct = new Map();   // (the eye's numbers come three to a sector of the fan: red, green and blue, so the sector keeps its strongest)
+      l.eye.forEach((i, q) => direct.set((i / 3) | 0, Math.max(direct.get((i / 3) | 0) || 0, Math.abs(l.ew[q]) / te)));
+      for (const [i, v] of direct) mark(p.input[i], 'in', 0.3 + 0.7 * v);
+      l.hid.forEach((n, q) => mark(p.neuron.get(n), 'in', 0.3 + 0.7 * Math.abs(l.hw[q]) / th));
+      f.forEach((o, q) => mark((o & 1 ? p.breed : p.move)[o >> 1], 'out', 0.3 + 0.7 * Math.abs(fw[q]) / tf));
+    };
     const y0 = 22;
     let x = 10;
     text(svg, { class: 'gp-label', x, y: 12 }, 'Sees');
@@ -79,20 +110,44 @@ export function createBrainPanel(host) {
     p.facing = text(svg, { class: 'gp-tick', x: cx, y: cy + fan * 0.88 + 14, 'text-anchor': 'middle' }, '');
     text(svg, { class: 'gp-tick', x: cx, y: H - 4, 'text-anchor': 'middle' }, `${Math.round(fov)}° field of view`);
     x += 2 * fan + 30;
-    // the hidden neurons: the grid of places they can be in, as slices (rows and columns are the other two axes of the space the genome is asked about); only some places have a neuron
-    const G = ES.grid, sliceW = G * cellG;
-    text(svg, { class: 'gp-label', x, y: 12 }, 'Hidden neurons');
-    for (let c = 0; c < G; c++) {
-      const rects = grid(svg, x + c * (sliceW + 6), y0 + 30, G, cellG, 'abcdefgh'[c]);
-      p.hidden.push(rects);
-      rects.forEach((r) => { r.style.opacity = '0.3'; });
+    // the hidden neurons, by layer: layer 1 listens to the eye, layer 2 to layer 1, layer 3 to layers 1 and 2, and the outputs to all of them. Hover one to see what it listens to and what it feeds.
+    const net = org.net, nIn = net.shape.nIn, C = ES.cells, PER = 7, CELL = 11, COLW = PER * CELL + 18;
+    const layers = [[], [], [], []];
+    for (let d = 0; d < C; d++) if (net.depth[d] > 0) layers[net.depth[d]].push(d);
+    const fromEye = [0, 0, 0, 0], fromLayer = [[], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];   // (connections into each layer: from the eye, and from each layer)
+    const listens = new Map(), feeds = new Map(), feedW = new Map();   // (per neuron: eye inputs, neurons, and outputs it connects to)
+    for (let d = 0; d < C; d++) {
+      const L = net.depth[d];
+      if (!L) continue;
+      const eye = [], hid = [], ew = [], hw = [];
+      for (let q = 0; q < net.cnt[d]; q++) { const sidx = net.src[d * ES.fanH + q], wq = net.w[d * ES.fanH + q]; if (sidx < nIn) { eye.push(sidx); ew.push(wq); fromEye[L]++; } else { hid.push(sidx - nIn); hw.push(wq); fromLayer[L][net.depth[sidx - nIn]]++; } }
+      listens.set(d, { eye, hid, ew, hw }); feeds.set(d, []); feedW.set(d, []);
     }
-    p.arch = text(svg, { class: 'gp-tick', x: x + (G * (sliceW + 6) - 6) / 2, y: y0 + 30 + sliceW + 30, 'text-anchor': 'middle' }, '');
-    p.depthTxt = [];
-    for (let c = 0; c < G; c++) for (let q = 0; q < G * G; q++) {
-      p.depthTxt.push(text(svg, { class: 'gp-tick', x: x + c * (sliceW + 6) + (q % G) * cellG + (cellG - 1) / 2, y: y0 + 30 + Math.floor(q / G) * cellG + cellG - 3, 'text-anchor': 'middle', style: 'font-size:8px;pointer-events:none' }, ''));
+    const toOut = [0, 0, 0, 0];
+    for (let o = 0; o < net.shape.nOut; o++) for (let q = 0; q < net.cnt[C + o]; q++) { const n = net.src[net.shape.outBase + o * ES.fanO + q] - nIn; feeds.get(n).push(o); feedW.get(n).push(net.w[net.shape.outBase + o * ES.fanO + q]); toOut[net.depth[n]]++; }
+    const colX = [0, 1, 2].map((c) => x + c * COLW);
+    p.neuron = new Map();
+    const flowText = ['', `${fromEye[1].toLocaleString()} from eye`, `${fromLayer[2][1]} from layer 1`, `${fromLayer[3][1] + fromLayer[3][2]} from 1 and 2`];
+    for (let L = 1; L <= 3; L++) {
+      const cx0 = colX[L - 1], list = layers[L];
+      text(svg, { class: 'gp-label', x: cx0, y: 12 }, `Layer ${L}` + (list.length ? ` · ${list.length}` : ''));
+      if (!list.length) text(svg, { class: 'gp-tick', x: cx0, y: y0 + 40 }, 'none');
+      list.forEach((d, i) => {
+        const r = el('rect', { class: 'gp-cell', x: cx0 + (i % PER) * CELL, y: y0 + 30 + Math.floor(i / PER) * CELL, width: CELL - 1, height: CELL - 1, rx: 1.5, tabindex: 0 }, svg, '');
+        const l = listens.get(d), f = feeds.get(d);
+        const parts = [];
+        if (l.eye.length) parts.push(`${l.eye.length} eye input${l.eye.length === 1 ? '' : 's'}`);
+        if (l.hid.length) parts.push(`${l.hid.length} neuron${l.hid.length === 1 ? '' : 's'} in earlier layers`);
+        r.dataset.info = `Layer ${L} neuron. Listens to ${parts.join(' and ')}. Feeds ${f.length} output${f.length === 1 ? '' : 's'}.`;
+        r.addEventListener('mouseenter', () => highlight(d)); r.addEventListener('mouseleave', unhighlight);
+        r.addEventListener('focus', () => highlight(d)); r.addEventListener('blur', unhighlight);
+        p.neuron.set(d, r);
+      });
+      if (list.length) text(svg, { class: 'gp-tick', x: cx0, y: y0 + 178 - 22 }, flowText[L]);
     }
-    x += G * (sliceW + 6) + 16;
+    p.arch = text(svg, { class: 'gp-tick', x: colX[0] + (3 * COLW - 18) / 2, y: y0 + 178, 'text-anchor': 'middle' }, '');
+    p.net = net; p.listens = listens; p.feeds = feeds; p.feedW = feedW; p.toOut = toOut;
+    x += 3 * COLW + 22;
     text(svg, { class: 'gp-label', x, y: 12 }, 'Picks');
     p.outX = x;
     p.move = grid(svg, x, y0 + 30, 3, cellO, 'move');
@@ -101,6 +156,7 @@ export function createBrainPanel(host) {
     const arrow = (ax) => el('path', { class: 'gp-arrow', d: `M${ax - 22} ${mid} h14 m-5 -4 l5 4 l-5 4`, fill: 'none' }, svg);
     arrow(10 + 2 * fan + 30); arrow(p.outX);
     p.say = text(svg, { class: 'gp-tick', x: 10 + 2 * fan + 30, y: H - 4 }, '');
+    p.unhighlight = unhighlight;
     parts = p;
   }
 
@@ -114,19 +170,16 @@ export function createBrainPanel(host) {
     }
     const clear = (rects) => rects.forEach((r) => { r.style.fill = 'transparent'; r.setAttribute('class', 'gp-cell'); });
     if (!b.act) {
-      p.hidden.forEach(clear); clear(p.move); clear(p.breed); p.depthTxt.forEach((t) => { t.textContent = ''; }); p.arch.textContent = '';
+      for (const r of p.neuron.values()) { r.style.fill = 'transparent'; } clear(p.move); clear(p.breed); p.arch.textContent = '';
       p.say.textContent = `Doing nothing this step: ${b.why}.`;
       return;
     }
-    const net = b.net, G = ES.grid, hid = b.hidden;
-    for (let d = 0; d < ES.cells; d++) {
-      const c = Math.floor(d / (G * G)), q = d % (G * G), rect = p.hidden[c][q], on = net.depth[d] > 0;
-      rect.style.opacity = on ? '1' : '0.3';
-      rect.style.fill = on ? signed(hid[d]) : 'transparent';
-      p.depthTxt[d].textContent = on ? net.depth[d] : '';
-      rect.firstChild.textContent = on ? `hidden neuron ${d + 1}: depth ${net.depth[d]}, ${net.cnt[d]} connection${net.cnt[d] === 1 ? '' : 's'} in, value ${num(hid[d])}` : 'no neuron here';
+    const net = b.net, hid = b.hidden;
+    for (const [d, rect] of p.neuron) {
+      rect.style.fill = signed(hid[d]);
+      rect.firstChild.textContent = `${rect.dataset.info} Value now ${num(hid[d])}.`;
     }
-    p.arch.textContent = `${net.hidden} hidden neuron${net.hidden === 1 ? '' : 's'}, ${net.deepest} deep, ${net.conns} connections`;
+    p.arch.textContent = `${net.hidden} hidden neuron${net.hidden === 1 ? '' : 's'} in ${net.deepest} layer${net.deepest === 1 ? '' : 's'}, ${net.conns.toLocaleString()} connections (${p.toOut.reduce((x, y) => x + y, 0)} into the outputs)`;
     const out = b.out;
     for (let ch = 0; ch < 2; ch++) {
       const rects = ch === 0 ? p.move : p.breed;

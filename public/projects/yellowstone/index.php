@@ -101,7 +101,7 @@ page_start([
     <h4 class="brain-head"></h4>
     <p class="sub brain-note"></p>
     <div class="brain-sub"></div>
-    <p class="sub">Orange cells are positive, blue negative, and the outlined cell is the one it picks. Hidden neurons are shown as four slices of their grid: a faint cell is a place with no neuron, and in the others the number is how many layers in the neuron is. Hover a cell for its value.</p>
+    <p class="sub">Orange cells are positive, blue negative, and the outlined cell is the one it picks. The hidden neurons are in columns by layer: layer 1 listens to the eye, layer 2 to layer 1, layer 3 to layers 1 and 2, and the picks listen to all of them. Hover a neuron to light up what it listens to in yellow (parts of the eye, or earlier neurons; a dashed outline is a part of the eye it hears of only through earlier neurons) and the picks it feeds in blue. The stronger the connection, the stronger the outline. Hover a cell for its value.</p>
     <h5>The genome that grew it</h5>
     <div class="brain-genome"></div>
     <p class="sub brain-genome-note"></p>

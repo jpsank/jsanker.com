@@ -103,6 +103,11 @@
 .gp .brain h5 { margin: 1rem 0 .3rem; font-size: .95rem; }
 .gp svg .gp-cell { stroke: var(--grid); stroke-width: 1; fill: transparent; }
 .gp svg .gp-pick { stroke: var(--fg); stroke-width: 2; }
+.gp svg [data-hl="self"] { stroke: var(--fg); stroke-width: 2.2; }
+.gp svg [data-hl="in"] { stroke: var(--wolf); stroke-width: 2; stroke-opacity: var(--hl-a, 1); }
+.gp svg [data-hl="via"] { stroke: var(--wolf); stroke-width: 1.6; stroke-opacity: var(--hl-a, 1); stroke-dasharray: 3 2; }
+.gp svg [data-hl="out"] { stroke: var(--water); stroke-width: 2.4; stroke-opacity: var(--hl-a, 1); }
+.gp svg rect.gp-cell:focus { outline: none; stroke: var(--fg); stroke-width: 2; }
 .gp svg .gp-arrow { stroke: var(--ink-3); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .gp svg .gp-edge { stroke-linecap: round; opacity: .8; }
 .gp svg .gp-pos { stroke: var(--prey); }
