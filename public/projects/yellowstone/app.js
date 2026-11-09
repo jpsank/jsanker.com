@@ -330,6 +330,7 @@ async function init() {
   });
 
   reset();
+  if (gpu) { viewIn.value = '3d'; setView(); }   // the 3D view is the default where the browser can draw it
 }
 
 init();

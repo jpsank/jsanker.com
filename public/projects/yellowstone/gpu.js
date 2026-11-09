@@ -3,21 +3,17 @@
 //   the ground   grass, water, snow, nitrogen and ground temperature on every cell: a handful of passes over the whole grid per step, one thread per cell. The numbers stay
 //                on the card; each step the animals get a copy of grass, water, snow and ground temperature back, and what they did to the ground (grass eaten, nitrogen
 //                dropped, heat given off) goes up as a small delta.
-//   the brains   every animal's network, run for all of them at once. A brain is 7,335 numbers painted by the animal's genome (the CPPN); those are painted on the card too, the
-//                moment an animal is born, and kept there as 16-bit floats. Each step one workgroup per animal follows its fan of rays out for what it sees, runs the network and picks its action.
+//   the brains   every animal's network, run for all of them at once. A brain is grown from the animal's genome (the CPPN, ES-HyperNEAT style: see esnet.js) on the card the moment the
+//                animal is born, and kept there as a record of neurons and connections. Each step one workgroup per animal follows its fan of rays out for what it sees, runs the network and picks its action.
 //
 // The arithmetic is the same as land.js and sim.js, in 32-bit floats instead of 64-bit, so a run is repeatable on the same machine and card but not identical to a CPU run.
-import { BRAIN, PROGRAM, encodeProgram, packNet, connectionTable, VISION, EYES, SAMPLES, N_VIEW, RAY_PACKED } from './sim.js';
+import { BRAIN, PROGRAM, encodeProgram, packNet, VISION, EYES, SAMPLES, N_VIEW, RAY_PACKED, RETINA, OUTPUTS } from './sim.js';
+import { ES } from './esnet.js';
 import { SHADOW_SOFT, SHADOW_REACH, LANDVIEW } from './land.js';
 
 const WG = 256;                 // threads per workgroup in the ground passes
 const SLOT_CAP = 200000;        // never more brains than this
 const EDGE0 = 3 + 4 * PROGRAM.maxNodes;   // where a program's connections start (see encodeProgram)
-const OFF = { w0: 0, b0: 0, w1: 0, b1: 0 };   // where each layer starts in a brain, in 16-bit numbers
-{
-  const [L0, L1] = BRAIN.layers;
-  OFF.w0 = 0; OFF.b0 = L0.ni * L0.nj; OFF.w1 = OFF.b0 + L0.nj; OFF.b1 = OFF.w1 + L1.ni * L1.nj;
-}
 
 /* ------------------------------------------------------------------ the ground */
 
@@ -420,12 +416,18 @@ fn landColour(height: f32, slope: f32, grass: f32, water: f32, snow: f32) -> vec
   return min(c, vec3<f32>(255.0)) / 255.0 - vec3<f32>(0.5);
 }
 const WORDS: u32 = ${BRAIN.words}u;
+const CELLS: u32 = ${ES.cells}u;
+const NIN: u32 = ${BRAIN.nIn}u;
+const NOUT: u32 = ${BRAIN.nOut}u;
+const BIASAT: u32 = ${BRAIN.biasAt}u;
+const ENT: u32 = ${BRAIN.entAt}u;
+const OUTAT: u32 = ${BRAIN.outAt}u;
 var<workgroup> inp: array<f32, ${N_VIEW}>;
-var<workgroup> h1: array<f32, 27>;
+var<workgroup> hv: array<f32, ${ES.cells}>;
 var<workgroup> ov: array<f32, 18>;
 
-fn unh(base: u32, idx: u32) -> f32 {
-  let p = unpack2x16float(wts[base + (idx >> 1u)]);
+fn unb(base: u32, idx: u32) -> f32 {   // the bias of a neuron (16-bit floats, in pairs)
+  let p = unpack2x16float(wts[base + BIASAT + (idx >> 1u)]);
   return select(p.x, p.y, (idx & 1u) == 1u);
 }
 
@@ -498,16 +500,38 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
   }
   workgroupBarrier();
 
+  // the brain: hidden neurons stage by stage (each reads only the eye and shallower neurons), then the outputs
   let base = (rec.x & 0xffffffu) * WORDS;
-  if (canAct && t < 27u) {
-    var s = unh(base, ${OFF.b0}u + t);
-    for (var i = 0u; i < ${N_VIEW}u; i = i + 1u) { s = s + unh(base, ${OFF.w0}u + i * 27u + t) * inp[i]; }
-    h1[t] = tanh(s);
+  for (var stage = 1u; stage <= ${ES.stages}u; stage = stage + 1u) {
+    for (var d = t; d < CELLS; d = d + 64u) {
+      let hw = wts[base + d];
+      if (canAct && (hw & 15u) == stage) {
+        var s = unb(base, d);
+        let cnt = (hw >> 4u) & 0xfffu;
+        let at = base + ENT + d * ${ES.fanH}u;
+        for (var q = 0u; q < cnt; q = q + 1u) {
+          let e = wts[at + q];
+          let j = e & 0xffffu;
+          var v = 0.0;
+          if (j < NIN) { v = inp[j]; } else { v = hv[j - NIN]; }
+          s = s + unpack2x16float(e >> 16u).x * v;
+        }
+        hv[d] = tanh(s);
+      }
+    }
+    workgroupBarrier();
   }
-  workgroupBarrier();
-  if (canAct && t < 18u) {
-    var s = unh(base, ${OFF.b1}u + t);
-    for (var i = 0u; i < 27u; i = i + 1u) { s = s + unh(base, ${OFF.w1}u + i * 18u + t) * h1[i]; }
+  if (canAct && t < NOUT) {
+    var s = unb(base, CELLS + t);
+    let cnt = (wts[base + CELLS + t] >> 4u) & 0xfffu;
+    let at = base + OUTAT + t * ${ES.fanO}u;
+    for (var q = 0u; q < cnt; q = q + 1u) {
+      let e = wts[at + q];
+      let j = e & 0xffffu;
+      var v = 0.0;
+      if (j < NIN) { v = inp[j]; } else { v = hv[j - NIN]; }
+      s = s + unpack2x16float(e >> 16u).x * v;
+    }
     ov[t] = s;
   }
   workgroupBarrier();
@@ -544,7 +568,9 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t
       for (var k = 0u; k < 9u; k = k + 1u) {
         if (ov[k * 2u + 1u] > bb) { bb = ov[k * 2u + 1u]; bk = k; }
       }
-      res[a] = best | (bk << 4u);
+      var total = 0u;
+      for (var d = 0u; d < CELLS + NOUT; d = d + 1u) { total = total + ((wts[base + d] >> 4u) & 0xfffu); }
+      res[a] = best | (bk << 4u) | (total << 8u);
     }
   }
 }`;
@@ -570,16 +596,29 @@ fn main(@builtin(global_invocation_id) g: vec3<u32>) {
   if (g.x < bp.count) { cell[an[g.x].y] = g.x + 1u; }
 }`;
 
-// paints the weights of newborn brains: one thread per pair of numbers, evaluating the genome's CPPN for each
+// grows the brains of newborns (see esnet.js, which this follows step by step): one workgroup for each newborn, one thread for each candidate place for a hidden neuron
 const CPPN_WGSL = /* wgsl */ `
 @group(0) @binding(0) var<uniform> cp: vec4<u32>;
 @group(0) @binding(2) var<storage, read> prog: array<u32>;
 @group(0) @binding(3) var<storage, read> born: array<u32>;
-@group(0) @binding(4) var<storage, read> conn: array<f32>;
+@group(0) @binding(4) var<storage, read> places: array<f32>;
 @group(0) @binding(5) var<storage, read_write> wts: array<u32>;
 const WORDS: u32 = ${BRAIN.words}u;
 const PROGW: u32 = ${PROGRAM.words}u;
 const EDGE0: u32 = ${EDGE0}u;
+const G: u32 = ${ES.grid}u;
+const CELLS: u32 = ${ES.cells}u;
+const NIN: u32 = ${BRAIN.nIn}u;
+const NOUT: u32 = ${BRAIN.nOut}u;
+const BIASAT: u32 = ${BRAIN.biasAt}u;
+const ENT: u32 = ${BRAIN.entAt}u;
+const OUTAT: u32 = ${BRAIN.outAt}u;
+const FANH: u32 = ${ES.fanH}u;
+const FANO: u32 = ${ES.fanO}u;
+var<workgroup> wsh: array<f32, CELLS>;
+var<workgroup> dep: array<u32, CELLS>;
+var<workgroup> useful: array<atomic<u32>, CELLS>;
+var<workgroup> bsh: array<f32, ${ES.cells + BRAIN.nOut}>;
 
 fn actv(k: u32, x: f32) -> f32 {
   if (k == 0u) { return 1.0 / (1.0 + exp(-x)); }
@@ -588,9 +627,10 @@ fn actv(k: u32, x: f32) -> f32 {
   if (k == 3u) { return sin(x); }
   return cos(x);
 }
-fn eval(pb: u32, g: u32) -> f32 {
+// the genome's answer for a receiving place and a sending place
+fn cppn(pb: u32, r: vec3<f32>, s: vec3<f32>) -> f32 {
   var vals: array<f32, 64>;
-  for (var q = 0u; q < 6u; q = q + 1u) { vals[q] = conn[g * 6u + q]; }
+  vals[0] = r.x; vals[1] = r.y; vals[2] = r.z; vals[3] = s.x; vals[4] = s.y; vals[5] = s.z;
   let count = prog[pb];
   for (var k = 0u; k < count; k = k + 1u) {
     let nd = pb + 3u + 4u * k;
@@ -603,13 +643,116 @@ fn eval(pb: u32, g: u32) -> f32 {
   }
   return vals[prog[pb + 1u]];
 }
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let b = gid.y;
-  let p = gid.x;
-  if (b >= cp.x || p >= WORDS) { return; }
+fn cellAt(d: u32) -> vec3<f32> {
+  return vec3<f32>(-1.0 + (2.0 * f32(d / (G * G)) + 1.0) / f32(G), -1.0 + (2.0 * f32((d / G) % G) + 1.0) / f32(G), -1.0 + (2.0 * f32(d % G) + 1.0) / f32(G));
+}
+fn place(i: u32) -> vec3<f32> { return vec3<f32>(places[i * 3u], places[i * 3u + 1u], places[i * 3u + 2u]); }
+fn toH(w: f32) -> u32 { return pack2x16float(vec2<f32>(w, 0.0)) & 0xffffu; }
+
+@compute @workgroup_size(${ES.cells})
+fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t: u32) {
+  let b = wg.y * 65535u + wg.x;
+  if (b >= cp.x) { return; }   // (every thread of the workgroup agrees)
   let pb = b * PROGW;
-  wts[born[b] * WORDS + p] = pack2x16float(vec2<f32>(eval(pb, 2u * p), eval(pb, 2u * p + 1u)));
+  let base = born[b] * WORDS;
+  let me = cellAt(t);
+  let ci = t / (G * G);
+  let cj = (t / G) % G;
+  let cl = t % G;
+  var cnt = 0u;
+  dep[t] = 0u;
+  atomicStore(&useful[t], 0u);
+  workgroupBarrier();
+
+  // a connection is kept where it is strong and differs from what is next door (see esnet.js)
+  for (var stage = 1u; stage <= ${ES.stages}u; stage = stage + 1u) {
+    let mine = dep[t];
+    var nSrc = NIN;
+    if (stage > 1u) { nSrc = CELLS; }
+    for (var k = 0u; k < nSrc; k = k + 1u) {
+      var s = vec3<f32>(0.0);
+      var sid = 0u;
+      var isSrc = true;
+      if (stage == 1u) {
+        sid = (k * ${ES.scramble}u) % NIN;
+        s = place(sid);
+      } else {
+        let ds = workgroupUniformLoad(&dep[k]);
+        isSrc = ds >= 1u && ds < stage;
+        sid = NIN + k;
+        s = cellAt(k);
+      }
+      if (isSrc) {
+        let w = cppn(pb, me, s);
+        wsh[t] = w;
+        workgroupBarrier();
+        let aw = abs(w);
+        var band = 0.0;
+        for (var a = 0u; a < 3u; a = a + 1u) {
+          var st = 1u;
+          var pos = cl;
+          if (a == 0u) { st = G * G; pos = ci; } else if (a == 1u) { st = G; pos = cj; }
+          var dl = aw;
+          var dh = aw;
+          if (pos > 0u) { dl = abs(w - wsh[t - st]); }
+          if (pos < G - 1u) { dh = abs(w - wsh[t + st]); }
+          band = max(band, min(dl, dh));
+        }
+        if (mine == 0u && cnt < FANH && aw > ${ES.wThr} && band > ${ES.bandThr}) {
+          wts[base + ENT + t * FANH + cnt] = sid | (toH(w) << 16u);
+          cnt = cnt + 1u;
+        }
+        workgroupBarrier();
+      }
+    }
+    if (mine == 0u && cnt > 0u) { dep[t] = stage; }
+    workgroupBarrier();
+  }
+
+  // the outputs ask every neuron found for a connection
+  var cntO = 0u;
+  if (t < NOUT) {
+    let oc = place(NIN + t);
+    for (var n = 0u; n < CELLS; n = n + 1u) {
+      if (dep[n] > 0u && cntO < FANO) {
+        let v = cppn(pb, oc, cellAt(n));
+        if (abs(v) > ${ES.outThr}) {
+          wts[base + OUTAT + t * FANO + cntO] = (NIN + n) | (toH(v) << 16u);
+          cntO = cntO + 1u;
+          atomicStore(&useful[n], 1u);
+        }
+      }
+    }
+  }
+  workgroupBarrier();
+  // a neuron that cannot reach an output is dropped, and so are the neurons that only fed it
+  for (var stage = ${ES.stages}u; stage >= 2u; stage = stage - 1u) {
+    if (dep[t] == stage && atomicLoad(&useful[t]) == 1u) {
+      for (var q = 0u; q < cnt; q = q + 1u) {
+        let src = wts[base + ENT + t * FANH + q] & 0xffffu;
+        if (src >= NIN) { atomicStore(&useful[src - NIN], 1u); }
+      }
+    }
+    workgroupBarrier();
+  }
+  let keep = atomicLoad(&useful[t]) == 1u;
+  if (keep) {
+    wts[base + t] = dep[t] | (cnt << 4u);
+    bsh[t] = cppn(pb, me, vec3<f32>(-1.0, 0.0, 0.0));
+  } else {
+    wts[base + t] = 0u;
+    bsh[t] = 0.0;
+  }
+  if (t < NOUT) {
+    wts[base + CELLS + t] = 1u | (cntO << 4u);
+    bsh[CELLS + t] = cppn(pb, place(NIN + t), vec3<f32>(-1.0, 0.0, 0.0));
+  }
+  workgroupBarrier();
+  for (var p = t; p < ${Math.ceil((ES.cells + BRAIN.nOut) / 2)}u; p = p + CELLS) {
+    var hi = 0.0;
+    if (2u * p + 1u < CELLS + NOUT) { hi = bsh[2u * p + 1u]; }
+    wts[base + BIASAT + p] = pack2x16float(vec2<f32>(bsh[2u * p], hi));
+  }
 }`;
 
 /* ------------------------------------------------------------------ the device */
@@ -669,8 +812,8 @@ class Gpu {
       deltas: await make('deltas', DELTAS, { 0: 'u', 2: 'r', 3: 'r', 4: 'w' }),
       cppn: await make('cppn', CPPN_WGSL, { 0: 'u', 2: 'r', 3: 'r', 4: 'r', 5: 'w' }),
     };
-    const table = connectionTable();
-    this.conn = d.createBuffer({ size: table.byteLength, usage: STORE, label: 'conn' });
+    const table = new Float32Array([...RETINA, ...OUTPUTS]);   // where the eye's neurons and the outputs sit, for growing brains
+    this.conn = d.createBuffer({ size: table.byteLength, usage: STORE, label: 'places' });
     d.queue.writeBuffer(this.conn, 0, table);
   }
 
@@ -860,7 +1003,7 @@ class GpuSim {
     bpu[0] = count; bpu[1] = n; bpf[4] = w.climb; bpf[5] = w.swim; bpf[6] = w.snowCost; bpf[7] = w.snowCap; bpf[8] = w.swimDepth; bpf[9] = L.cellRun ?? 1; bpf[10] = L.metresPerUnit ? EYES.eye / L.metresPerUnit : 0; bpf[11] = EYES.tol;
     q.writeBuffer(this.BP, 0, bpd);
 
-    // newborn brains: painted from their genomes' programs
+    // newborn brains: grown from their genomes' programs
     const born = this.pending.filter((o) => w.animals.get(o.id) === o && o.slot >= 0);
     this.pending = [];
     const progs = [], slots = [];
@@ -870,7 +1013,7 @@ class GpuSim {
       for (const o of born) {
         const at = progs.length * PROGRAM.words;
         if (encodeProgram(o.genome, progData, at)) { progs.push(o); slots.push(o.slot); }
-        else q.writeBuffer(this.wts, o.slot * BRAIN.words * 4, packNet(o.genome));   // too big for the card's fixed registers: painted here instead
+        else q.writeBuffer(this.wts, o.slot * BRAIN.words * 4, packNet(o.genome));   // too big for the card's fixed registers: grown here instead
       }
     }
     const nBorn = progs.length;
@@ -903,7 +1046,7 @@ class GpuSim {
       const p = enc.beginComputePass();
       p.setPipeline(P.cppn.pipeline);
       p.setBindGroup(0, this.bg(P.cppn, this.CP, this.prog, this.bornBuf, this.g.conn, this.wts));
-      p.dispatchWorkgroups(Math.ceil(BRAIN.words / 64), nBorn);
+      p.dispatchWorkgroups(Math.min(nBorn, 65535), Math.ceil(nBorn / 65535));
       p.end();
     }
     const run = enc.beginComputePass();

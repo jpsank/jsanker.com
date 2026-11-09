@@ -1,6 +1,7 @@
 // The brain viewer: click an organism and see what it sees, what each layer of its network does, what it decides,
 // and the NEAT genome that grew the network. Plain SVG; everything is rebuilt from sim.js's World.brain() and genomeGraph().
 import { speciesName, genomeGraph, ACT_NAMES, EYES, SAMPLES, fovDeg, BREED_REL } from './sim.js';
+import { ES } from './esnet.js';
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 
@@ -61,8 +62,8 @@ export function createBrainPanel(host) {
 
   function buildSub(org) {
     subHost.replaceChildren();
-    const k = 9, W = 640, cellIn = 19, cellH = 20, cellO = 24, H = 230, fan = 90;
-    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'gp-svg', role: 'img', 'aria-label': 'The animal\'s network: what it sees, its hidden layer, and what it picks' }, subHost);
+    const k = 9, W = 640, cellG = 12, cellO = 24, H = 230, fan = 90;
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'gp-svg', role: 'img', 'aria-label': 'The animal\'s network: what it sees, the hidden neurons its genome grew, and what it picks' }, subHost);
     const p = { k, input: [], hidden: [], move: [], breed: [] };
     const y0 = 22;
     let x = 10;
@@ -78,9 +79,20 @@ export function createBrainPanel(host) {
     p.facing = text(svg, { class: 'gp-tick', x: cx, y: cy + fan * 0.88 + 14, 'text-anchor': 'middle' }, '');
     text(svg, { class: 'gp-tick', x: cx, y: H - 4, 'text-anchor': 'middle' }, `${Math.round(fov)}° field of view`);
     x += 2 * fan + 30;
-    text(svg, { class: 'gp-label', x, y: 12 }, 'Hidden layer');
-    for (let c = 0; c < 3; c++) p.hidden.push(grid(svg, x + c * (3 * cellH + 8), y0 + 30, 3, cellH, ['a', 'b', 'c'][c]));
-    x += 3 * (3 * cellH + 8) + 22;
+    // the hidden neurons: the grid of places they can be in, as slices (rows and columns are the other two axes of the space the genome is asked about); only some places have a neuron
+    const G = ES.grid, sliceW = G * cellG;
+    text(svg, { class: 'gp-label', x, y: 12 }, 'Hidden neurons');
+    for (let c = 0; c < G; c++) {
+      const rects = grid(svg, x + c * (sliceW + 6), y0 + 30, G, cellG, 'abcdefgh'[c]);
+      p.hidden.push(rects);
+      rects.forEach((r) => { r.style.opacity = '0.3'; });
+    }
+    p.arch = text(svg, { class: 'gp-tick', x: x + (G * (sliceW + 6) - 6) / 2, y: y0 + 30 + sliceW + 30, 'text-anchor': 'middle' }, '');
+    p.depthTxt = [];
+    for (let c = 0; c < G; c++) for (let q = 0; q < G * G; q++) {
+      p.depthTxt.push(text(svg, { class: 'gp-tick', x: x + c * (sliceW + 6) + (q % G) * cellG + (cellG - 1) / 2, y: y0 + 30 + Math.floor(q / G) * cellG + cellG - 3, 'text-anchor': 'middle', style: 'font-size:8px;pointer-events:none' }, ''));
+    }
+    x += G * (sliceW + 6) + 16;
     text(svg, { class: 'gp-label', x, y: 12 }, 'Picks');
     p.outX = x;
     p.move = grid(svg, x, y0 + 30, 3, cellO, 'move');
@@ -102,17 +114,20 @@ export function createBrainPanel(host) {
     }
     const clear = (rects) => rects.forEach((r) => { r.style.fill = 'transparent'; r.setAttribute('class', 'gp-cell'); });
     if (!b.act) {
-      p.hidden.forEach(clear); clear(p.move); clear(p.breed);
+      p.hidden.forEach(clear); clear(p.move); clear(p.breed); p.depthTxt.forEach((t) => { t.textContent = ''; }); p.arch.textContent = '';
       p.say.textContent = `Doing nothing this step: ${b.why}.`;
       return;
     }
-    const hid = b.layers[0];
-    for (let c = 0; c < 3; c++) for (let i = 0; i < 9; i++) {
-      const v = hid[i * 3 + c];
-      p.hidden[c][i].style.fill = signed(v);
-      p.hidden[c][i].firstChild.textContent = `hidden ${['a', 'b', 'c'][c]}, cell ${i + 1}: ${num(v)}`;
+    const net = b.net, G = ES.grid, hid = b.hidden;
+    for (let d = 0; d < ES.cells; d++) {
+      const c = Math.floor(d / (G * G)), q = d % (G * G), rect = p.hidden[c][q], on = net.depth[d] > 0;
+      rect.style.opacity = on ? '1' : '0.3';
+      rect.style.fill = on ? signed(hid[d]) : 'transparent';
+      p.depthTxt[d].textContent = on ? net.depth[d] : '';
+      rect.firstChild.textContent = on ? `hidden neuron ${d + 1}: depth ${net.depth[d]}, ${net.cnt[d]} connection${net.cnt[d] === 1 ? '' : 's'} in, value ${num(hid[d])}` : 'no neuron here';
     }
-    const out = b.layers[b.layers.length - 1];
+    p.arch.textContent = `${net.hidden} hidden neuron${net.hidden === 1 ? '' : 's'}, ${net.deepest} deep, ${net.conns} connections`;
+    const out = b.out;
     for (let ch = 0; ch < 2; ch++) {
       const rects = ch === 0 ? p.move : p.breed;
       // the step grid shows what the animal weighs: how much it wants each step minus the log of what the step costs

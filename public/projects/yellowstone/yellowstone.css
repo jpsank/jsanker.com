@@ -63,6 +63,14 @@
 .gp .fields input[type="checkbox"] { width: auto; margin: 0; }
 .gp .stat { margin: .8rem 0 .3rem; font-variant-numeric: tabular-nums; }
 
+/* on a wide screen the map and everything about it sit side by side, so the animal being watched can be seen next to the world it is in */
+@media (min-width: 1100px) {
+  .gp .sim { --w: min(1480px, calc(100vw - 2rem)); width: var(--w); margin-left: calc(50% - var(--w) / 2); grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.2rem; }
+  .gp .sim-view { position: sticky; top: .8rem; }
+  .gp .sim-view canvas { width: min(100%, calc(100vh - 6.5rem)); }
+  .gp .sim-side .chart.brain { margin: .8rem 0 0; }
+}
+
 /* charts */
 .gp .chart { background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: .8rem .9rem; margin: 1rem 0; }
 .gp .chart h4 { margin: 0 0 .15rem; font-size: 1rem; }

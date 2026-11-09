@@ -1,8 +1,8 @@
 // Yellowstone: a rebuild of evo/ from github.com/jpsank/thesis in plain JavaScript, with terrain, water, wolves, days and seasons added.
 //
 // Animals live on a 400x400 map of land, with walls all round (land.js: elevation, water, nitrogen and grass on every cell). Each animal carries a
-// genome: a small network (a CPPN) that is never run on the world directly. Instead it is queried once per pair of
-// neurons of a fixed "substrate" to paint the weights of the network that does the sensing and acting (HyperNEAT-style).
+// genome: a small network (a CPPN) that is never run on the world directly. Instead it is asked about pairs of places in a 3D space to grow the network that does the sensing and acting,
+// including where its hidden neurons are and how many there are (ES-HyperNEAT-style: see esnet.js).
 // An animal faces one of eight ways and sees a fan of rays out from there (a wide field for grazers, a narrow one for hunters; hills hide what is behind them) as colours, and answers with how much
 // it wants each of nine actions, turning left, straight or right by moving forward, staying or back (weighed against what the step costs, so climbing is dear), and where to breed. Every animal decides from the same snapshot of the world at the start of the step (decide), then they act one at a time in a random order (act).
 // With WebGPU the ground and the decisions are worked out on the graphics card (gpu.js); everything else, including acting, is here either way. A diet gene, from 0 (digests grass) to 1 (digests meat),
@@ -12,6 +12,7 @@
 import { Land, climateRows, dayOfYear, landRgb } from './land.js';
 import { TERRAIN } from './terrain.js';
 import { LAKES } from './lakes.js';
+import { ES, growBrain, runBrain, recordLayout, packRecord } from './esnet.js';
 
 /* ------------------------------------------------------------------ random numbers */
 
@@ -316,28 +317,10 @@ for (let h = 0; h < 8; h++) for (let k = 0; k < 9; k++) {
 /** The breeding grid is a map of the animal's neighbours as it faces: which heading, relative to its own, each cell stands for (-1 for itself). */
 export const BREED_REL = [7, 0, 1, 6, -1, 2, 5, 4, 3];
 
-/* ------------------------------------------------------------------ the phenotype (phenotype_nn.py) */
-
-/** Coordinates of every neuron of one substrate layer, each axis normalised to [-1, 1], C order. */
-function layerCoords(dims) {
-  const n = dims[0] * dims[1] * dims[2];
-  const out = new Float64Array(n * 3);
-  let k = 0;
-  for (let a = 0; a < dims[0]; a++) {
-    for (let b = 0; b < dims[1]; b++) {
-      for (let c = 0; c < dims[2]; c++) {
-        out[k++] = dims[0] === 1 ? 0 : (a / (dims[0] - 1)) * 2 - 1;
-        out[k++] = dims[1] === 1 ? 0 : (b / (dims[1] - 1)) * 2 - 1;
-        out[k++] = dims[2] === 1 ? 0 : (c / (dims[2] - 1)) * 2 - 1;
-      }
-    }
-  }
-  return out;
-}
+/* ------------------------------------------------------------------ the phenotype: the brain a genome grows (esnet.js) */
 
 // The last layer is a 3 x 3 grid of cells, one per place the animal could act on (itself in the middle). It has two such grids:
 // how much it wants to step to each cell (weighed against what the step costs), and where to breed.
-const ANIMAL_NET = [[EYES.rays, SAMPLES, 3], [3, 3, 3], [3, 3, 2]];
 
 /** Where each input neuron sits, in the same frame as the action cells (first axis: rows, forward is -1; second: columns, right is +1): the distance a ray reaches, 0 near to -1 far, and which ray, from the
  *  far left of its field of view to the far right, so a network can tie what is seen out to the left to turning left. The third axis is the colour. */
@@ -350,13 +333,6 @@ function retinaCoords() {
   return out;
 }
 const RETINA = retinaCoords();
-const COORDS = new Map();
-function coordsFor(dims) {
-  const key = dims.join('x');
-  if (!COORDS.has(key)) COORDS.set(key, layerCoords(dims));
-  return COORDS.get(key);
-}
-
 /** The 3 x 3 action cells, `ch` channels each. The eight steps sit on a circle around the middle cell (stay) instead of on a
  *  square grid: on a square the corners are far from the middle, and a smooth function of position, which is what a CPPN
  *  is, has its largest value at a corner far more often than anywhere else. */
@@ -374,73 +350,24 @@ function actionCoords(ch) {
   return out;
 }
 
-function buildNet(g, substrate) {
-  const cppn = compileCppn(g);
-  const layers = [];
-  for (let l = 1; l < substrate.length; l++) {
-    const last = l === substrate.length - 1;
-    const cj = last ? actionCoords(substrate[l][2]) : coordsFor(substrate[l]), ci = l === 1 ? RETINA : coordsFor(substrate[l - 1]);
-    const nj = cj.length / 3, ni = ci.length / 3;
-    const W = new Float32Array(nj * ni), B = new Float32Array(nj);
-    for (let j = 0; j < nj; j++) {
-      const j0 = cj[j * 3], j1 = cj[j * 3 + 1], j2 = cj[j * 3 + 2];
-      for (let i = 0; i < ni; i++) W[j * ni + i] = cppn(j0, j1, j2, ci[i * 3], ci[i * 3 + 1], ci[i * 3 + 2]);
-      B[j] = cppn(j0, j1, j2, -1, 0, 0);
-    }
-    layers.push({ W, B, nj, ni });
-  }
-  const bufs = layers.map((L) => new Float32Array(L.nj));
-  return {
-    layers, bufs,
-    forward(input) {
-      let cur = input;
-      for (let l = 0; l < layers.length; l++) {
-        const { W, B, nj, ni } = layers[l], out = bufs[l];
-        for (let j = 0; j < nj; j++) {
-          let s = B[j];
-          const row = j * ni;
-          for (let i = 0; i < ni; i++) s += W[row + i] * cur[i];
-          out[j] = l === layers.length - 1 ? s : Math.tanh(s);   // the last layer stays linear so its cells can be compared
-        }
-        cur = out;
-      }
-      return cur;
-    },
-  };
+const OUTPUTS = actionCoords(2);   // (the nine places to step to, and the nine to breed into)
+
+/** The brain a genome grows, ready to run on the processor: see growBrain and runBrain in esnet.js. */
+function buildNet(g) {
+  const net = growBrain(compileCppn(g), RETINA, OUTPUTS);
+  net.forward = (input) => runBrain(net, input);
+  return net;
 }
 
 /* ------------------------------------------------------------------ what the GPU needs to build and run the brains */
 
-// A brain is stored as 16-bit numbers, layer by layer: for each layer the weights ordered input-major (so neighbouring GPU threads read
-// neighbouring numbers), then the biases. A genome is sent to the GPU as a small program (see encodeProgram) and the GPU paints the weights.
-const layerSizes = ANIMAL_NET.slice(1).map((d, l) => ({ ni: ANIMAL_NET[l].reduce((a, b) => a * b, 1), nj: l === ANIMAL_NET.length - 2 ? 9 * d[2] : d.reduce((a, b) => a * b, 1) }));
-export const BRAIN = { layers: layerSizes, halves: layerSizes.reduce((a, L) => a + L.ni * L.nj + L.nj, 0) };
-BRAIN.words = Math.ceil(BRAIN.halves / 2);   // (the numbers are stored in pairs: an odd count leaves one spare)
+// A brain is stored for the card as a record of 32-bit words (see recordLayout in esnet.js). A genome is sent to the GPU as a small program (see encodeProgram) and the GPU grows the brain from it.
+export const BRAIN = recordLayout(RETINA.length / 3, OUTPUTS.length / 3);
 export const PROGRAM = { maxNodes: 48, maxEdges: 320 };
 PROGRAM.words = 3 + 4 * PROGRAM.maxNodes + 2 * PROGRAM.maxEdges;
 
 const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
 const bitsOf = (x) => { f32[0] = x; return u32[0]; };
-/** Round a number to the nearest 16-bit float, as its bits. */
-function toHalf(x) {
-  f32[0] = x;
-  const b = u32[0], sign = (b >>> 16) & 0x8000, ex = (b >>> 23) & 0xff;
-  let m = b & 0x7fffff, e = ex - 127 + 15;
-  if (ex === 0xff) return sign | 0x7c00 | (m ? 0x200 : 0);
-  if (e >= 31) return sign | 0x7c00;
-  if (e <= 0) {
-    if (e < -10) return sign;
-    m |= 0x800000;
-    const sh = 14 - e, rem = m & ((1 << sh) - 1), half = 1 << (sh - 1);
-    let h = m >>> sh;
-    if (rem > half || (rem === half && (h & 1))) h++;
-    return sign | h;
-  }
-  let h = sign | (e << 10) | (m >>> 13);
-  const rem = m & 0x1fff;
-  if (rem > 0x1000 || (rem === 0x1000 && (h & 1))) h++;
-  return h;
-}
 
 /** Write genome `g` as a program into dst[off ...]: [nodes, output slot, zero slot, then (activation, bias, first edge, last edge) per node, then (source slot, weight) per edge]. False if it is too big for the GPU's fixed-size registers. */
 export function encodeProgram(g, dst, off) {
@@ -457,30 +384,8 @@ export function encodeProgram(g, dst, off) {
   return true;
 }
 
-/** A genome's whole brain as packed 16-bit weights, built on the CPU (for the rare genome too big for encodeProgram). */
-export function packNet(g) {
-  const net = buildNet(g, ANIMAL_NET), halves = new Uint16Array(BRAIN.words * 2);
-  let o = 0;
-  for (const L of net.layers) {
-    for (let i = 0; i < L.ni; i++) for (let j = 0; j < L.nj; j++) halves[o++] = toHalf(L.W[j * L.ni + i]);
-    for (let j = 0; j < L.nj; j++) halves[o++] = toHalf(L.B[j]);
-  }
-  return new Uint32Array(halves.buffer);
-}
-
-/** For every number in a brain, in storage order, the six inputs of the CPPN that paints it: where the receiving neuron is, and where the sending one is. */
-export function connectionTable() {
-  const out = new Float32Array(BRAIN.words * 2 * 6);
-  let o = 0;
-  for (let l = 1; l < ANIMAL_NET.length; l++) {
-    const last = l === ANIMAL_NET.length - 1;
-    const cj = last ? actionCoords(ANIMAL_NET[l][2]) : coordsFor(ANIMAL_NET[l]), ci = l === 1 ? RETINA : coordsFor(ANIMAL_NET[l - 1]);
-    const nj = cj.length / 3, ni = ci.length / 3;
-    for (let i = 0; i < ni; i++) for (let j = 0; j < nj; j++) { for (let q = 0; q < 3; q++) { out[o++] = cj[j * 3 + q]; } for (let q = 0; q < 3; q++) out[o++] = ci[i * 3 + q]; }
-    for (let j = 0; j < nj; j++) { out[o++] = cj[j * 3]; out[o++] = cj[j * 3 + 1]; out[o++] = cj[j * 3 + 2]; out[o++] = -1; out[o++] = 0; out[o++] = 0; }
-  }
-  return out;
-}
+/** A genome's whole brain as a record for the card, grown here on the processor (for the rare genome too big for encodeProgram). */
+export function packNet(g) { return packRecord(growBrain(compileCppn(g), RETINA, OUTPUTS), BRAIN); }
 
 /* ------------------------------------------------------------------ the world */
 
@@ -519,6 +424,7 @@ export class World {
     const terrain = opts.terrain === false || this.n !== TERRAIN.n ? null : opts.terrain ?? TERRAIN;   // the real ground, unless asked for made-up ground
     this.latTop = opts.latTop ?? (terrain ? terrain.latTop : 65);       // the latitudes of the top and bottom rows of the map
     this.latBottom = opts.latBottom ?? (terrain ? terrain.latBottom : 25);
+    this.connCost = opts.connCost ?? 1e-5;   // energy each step for each connection in the brain, so that a larger brain has to pay for itself
     this.snowCost = opts.snowCost ?? 0.04; // extra energy per unit of snow depth in the cell stepped into (a unit of snow is a few cm of water, so tens of cm of snow)...
     this.snowCap = opts.snowCap ?? 6;      // ...counted up to this depth
     this.swim = opts.swim ?? (terrain ? 0.5 : 0.15);          // extra energy for a step into water deep enough to swim: several times a step on dry land
@@ -598,8 +504,9 @@ export class World {
       col: [0.5, diet - 0.5, -0.5],
       dec: 255,   // what it decided this step (see decide)
       slot: -1,   // where its brain lives on the GPU
+      conns: 0,   // how many connections its brain has (it pays to keep them up: see connCost)
       _net: null,
-      get net() { return this._net ??= buildNet(this.genome, ANIMAL_NET); },   // (built when something needs to run or draw it on the CPU)
+      get net() { return this._net ??= buildNet(this.genome); },   // (built when something needs to run or draw it on the CPU)
     };
     if (this.gpu) this.gpu.born(org);
     this.animals.set(id, org);
@@ -687,9 +594,8 @@ export class World {
     this.land.ensureLight(this.clim);
     this.look(org, this.view);
     const input = Float32Array.from(this.view);
-    if (org.energy <= 1) return { k: 9, input, layers: [], act: false, why: 'too weak to act' };
-    const out = org.net.forward(this.view);
-    const layers = org.net.bufs.map((b) => Float32Array.from(b));
+    if (org.energy <= 1) return { k: 9, input, net: null, hidden: null, act: false, why: 'too weak to act' };
+    const net = org.net, out = net.forward(this.view), hidden = Float32Array.from(net.hv);
     const move = this.choose(org, out);
     const breed = World.argmax9(out, 1, 2);
     const n = this.n, E = this.land.elev, W = this.land.water, S = this.land.snow, here = E[org.r * n + org.c], costs = [];
@@ -697,7 +603,7 @@ export class World {
       const [, di, dj] = stepOf(org.h, k), rr = org.r + di, cc = org.c + dj, j = rr * n + cc;
       costs.push(rr < 0 || rr >= n || cc < 0 || cc >= n ? WALL : this.stepCost(di, dj, E[j] - here, W[j], S[j]));
     }
-    return { k: 9, input, layers, act: true, move, breed, costs };
+    return { k: 9, input, net, hidden, out: Float32Array.from(out), act: true, move, breed, costs };
   }
 
   remove(org) {
@@ -809,7 +715,7 @@ export class World {
   async stepGpu() {
     const list = [...this.animals.values()];
     const res = await this.gpu.step(list);
-    for (let i = 0; i < list.length; i++) list[i].dec = res[i] === 0xffffffff ? 255 : res[i];
+    for (let i = 0; i < list.length; i++) { const r = res[i]; if (r === 0xffffffff) list[i].dec = 255; else { list[i].dec = r & 255; list[i].conns = r >>> 8; } }   // (the step and breeding cell in the low byte, the connection count above)
     this.act(list);
   }
 
@@ -825,7 +731,9 @@ export class World {
     for (const a of list) {
       if (a.energy <= 1) { a.dec = 255; continue; }
       this.look(a, this.view);
-      const out = a.net.forward(this.view);
+      const net = a.net;
+      a.conns = net.conns;
+      const out = net.forward(this.view);
       a.dec = this.choose(a, out)[2] | (World.argmax9(out, 1, 2)[2] << 4);
     }
   }
@@ -863,7 +771,7 @@ export class World {
         }
       }
       this.feed(a);
-      const here = a.r * n + a.c, burn = rng.uniform(0, 0.05) * this.land.coldAt(here);   // burning more where it is colder: up the hill, and in winter
+      const here = a.r * n + a.c, burn = rng.uniform(0, 0.05) * this.land.coldAt(here) + this.connCost * a.conns;   // burning more where it is colder: up the hill, and in winter
       a.energy -= burn;
       this.land.heat(here, burn);   // and giving it off as warmth to the cell, and so to its neighbours
       a.col[2] = 0.5 - Math.min(1, Math.max(0, (a.energy - 10) / 100));
@@ -908,3 +816,5 @@ export class World {
     return this.grid[r * this.n + c];
   }
 }
+
+export { randomGenome, compileCppn, mutate as mutateGenome, RETINA, OUTPUTS, actionCoords };
